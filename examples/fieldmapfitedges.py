@@ -60,10 +60,6 @@ bx_peaks    = find_peaks(bx_values)
 by_peaks    = find_peaks(by_values)
 bx_valleys  = find_peaks(-bx_values)
 by_valleys  = find_peaks(-by_values)
-dbx_peaks   = find_peaks(bx_der)
-dby_peaks   = find_peaks(by_der)
-dbx_valleys = find_peaks(-bx_der)
-dby_valleys = find_peaks(-by_der)
 
 # Reassign to only include our regions of interest.
 # The find_peaks also picks up peaks in the flat regions, so this is to exclude those.
@@ -72,76 +68,40 @@ bx_peaks   = bx_peaks[0][np.logical_and(bx_peaks[0] > 99, bx_peaks[0] < 2100)]
 by_peaks   = by_peaks[0][np.logical_and(by_peaks[0] > 99, by_peaks[0] < 2100)]
 bx_valleys = bx_valleys[0][np.logical_and(bx_valleys[0] > 99, bx_valleys[0] < 2100)]
 by_valleys = by_valleys[0][np.logical_and(by_valleys[0] > 99, by_valleys[0] < 2100)]
-dbx_peaks   = dbx_peaks[0][np.logical_and(dbx_peaks[0] > 95, dbx_peaks[0] < 2100)]
-dby_peaks   = dby_peaks[0][np.logical_and(dby_peaks[0] > 95, dby_peaks[0] < 2100)]
-dbx_valleys = dbx_valleys[0][np.logical_and(dbx_valleys[0] > 95, dbx_valleys[0] < 2100)]
-dby_valleys = dby_valleys[0][np.logical_and(dby_valleys[0] > 95, dby_valleys[0] < 2100)]
 
 # Splits the magnetic field into five regions. The regions are decided based on the peaks and valleys of B_x.
-# The region between -1100 and xborder1 goes up to the point where the first derivative is zero.
-# The region between xborder1 and xborder2 goes from where the first derivative is zero to the first valley.
-# The region between xborder2 and xborder3 goes from the first valley to the first peak.
-# The region between xborder3 and xborder4 is the sinusoidal area.
-# The region between xborder4 and xborder5 goes from the last peak to the last valley and will be fitted with a polynomial.
-# The region between xborder5 and xborder6 goes from the last valley to where the first derivative is zero.
-# The region between xborder6 and 1100 goes from point where the first derivative is zero to the end and will be fitted with a polynomial.
-#xborder1 = dbx_valleys[0]   # z = -998
-#xborder2 = bx_valleys[0]    # z = -992
+# The region between -1100 and xborderleft goes from the start until the first peak. We fit a series of polynomials.
+# The region between xborderleft and xborderright encompasses the sinusoidal region in the middle. We fit a sinusoid.
+# The region between xborderright adn 1100 goes from the last peak until the end. We fit a series of polynomials.
 xborderleft  = bx_peaks[0]      # z = -974
 xborderright = bx_peaks[-1]     # z =  970
-#xborder5 = bx_valleys[-1]   # z =  990
-#xborder6 = dbx_peaks[-1]    # z =  997
 
 # Splits the magnetic field into five regions. The regions are decided based on the peaks and valleys of B_y.
-# The region between -1100 and yborder1 goes up to the point where the first derivative is zero.
-# The region between yborder1 and yborder2 goes from where the first derivative is zero to the first peak.
-# The region between yborder2 and yborder3 goes from the first peak to the first valley.
-# The region between yborder3 and yborder4 is the sinusoidal area.
-# The region between yborder4 and yborder5 goes from the last peak to the last valley and will be fitted with a polynomial.
-# The region between yborder5 and yborder6 goes from the last valley to where the first derivative is zero.
-# The region between yborder6 and 1100 goes from point where the first derivative is zero to the end and will be fitted with a polynomial.
-#yborder1 = dby_peaks[0]     # z = -1004
-#yborder2 = by_peaks[0]      # z = -1000
+# The region between -1100 and yborderleft goes from the start until the first peak. We fit a series of polynomials.
+# The region between yborderleft and yborderright encompasses the sinusoidal region in the middle. We fit a sinusoid.
+# The region between yborderright adn 1100 goes from the last peak until the end. We fit a series of polynomials.
 yborderleft  = by_valleys[0]    # z = -984
 yborderright = by_valleys[-1]   # z =  961
-#yborder5 = by_peaks[-1]     # z =  978
-#yborder6 = dby_valleys[-1]  # z =  983
 
 # Assign the z-arrays for each region.
 zx_regionleft  = z_values[:xborderleft].copy()
 zx_regionsines = z_values[xborderleft:xborderright].copy()
 zx_regionright = z_values[xborderright:].copy()
-#zx_region4 = z_values[xborderleft:xborderright].copy()
-#zx_region5 = z_values[xborderright:xborder5].copy()
-#zx_region6 = z_values[xborder5:xborder6].copy()
-#zx_region7 = z_values[xborder6:].copy()
 
 # Same for y.
 zy_regionleft  = z_values[:yborderleft].copy()
 zy_regionsines = z_values[yborderleft:yborderright].copy()
 zy_regionright = z_values[yborderright:].copy()
-#zy_region4 = z_values[yborderleft:yborderright].copy()
-#zy_region5 = z_values[yborderright:yborder5].copy()
-#zy_region6 = z_values[yborder5:yborder6].copy()
-#zy_region7 = z_values[yborder6:].copy()
 
 # And the B_x arrays
 bx_regionleft  = bx_values[:xborderleft].copy()
 bx_regionsines = bx_values[xborderleft:xborderright].copy()
-bx_regionright = bx_values[xborderright].copy()
-#bx_region4 = bx_values[xborderleft:xborderright].copy()
-#bx_region5 = bx_values[xborderright:xborder5].copy()
-#bx_region6 = bx_values[xborder5:xborder6].copy()
-#bx_region7 = bx_values[xborder6:].copy()
+bx_regionright = bx_values[xborderright:].copy()
 
 # And for B_y
 by_regionleft  = by_values[:yborderleft].copy()
 by_regionsines = by_values[yborderleft:yborderright].copy()
 by_regionright = by_values[yborderright:].copy()
-#by_region4 = by_values[yborderleft:yborderright].copy()
-#by_region5 = by_values[yborderright:yborder5].copy()
-#by_region6 = by_values[yborder5:yborder6].copy()
-#by_region7 = by_values[yborder6:].copy()
 
 ########################################################################################################################
 # SINUSOID FITTING
@@ -169,6 +129,8 @@ x_freqs = [2*np.pi*19, 2*np.pi*37]#[0.019, 0.037]
 y_freqs = [2*np.pi*28]#[0.028]
 
 # Initial parameter guesses [A1.1, A1.2, freq1, A2.1, A2.2, freq2]
+# These parameters were found from looking at the data for the amplitudes
+# and a Fourier transform of the data for the frequencies.
 x_initial_guess = np.array([0.29, 0.031, x_freqs[0], 0.083, -0.1, x_freqs[1]])
 y_initial_guess = np.array([0.3, 0.8, y_freqs[0]])
 
@@ -176,26 +138,18 @@ y_initial_guess = np.array([0.3, 0.8, y_freqs[0]])
 xpoptregsines, xpcovregsines = curve_fit(sinusoid, zx_regionsines, bx_regionsines, p0=x_initial_guess)
 ypoptregsines, ypcovregsines = curve_fit(sinusoid, zy_regionsines, by_regionsines, p0=y_initial_guess)
 
-print(xpoptregsines)
-print(ypoptregsines)
-
 # Calculates the output of the fit.
 xfit_regsines = sinusoid(zx_regionsines, *xpoptregsines)
 yfit_regsines = sinusoid(zy_regionsines, *ypoptregsines)
 
-# Find the pole length from k_y, the wavenumber of B_y
-# The frequency already has a 2pi factored out, so wavelength = 1/freq.
-# The pole length is 1/4 of the wavelength.
-# This pole length includes any spacing between the poles.
-# Returns 9 mm.
-#polelength = 1 / 4 / ypoptreg4[2]
-#print(f"Pole length [mm] = {polelength}")
 
 ########################################################################################################################
 # EDGE FITTING
 ########################################################################################################################
 
-
+# This function fits a polynomial to data (b_region) of given degree over a region (z_region).
+# It expects the boundary values and on which side the fit takes place (left=True for left, left=False for right).
+# The latter is important to match the polynomial to the sinusoidal region, or the
 def fit_polynomial_matching(degree, z_region, b_region, boundaries, left):
     """
     Fits a polynomial to any region that matches the middle sinusoidal region.
@@ -208,19 +162,6 @@ def fit_polynomial_matching(degree, z_region, b_region, boundaries, left):
     Returns:
         list: Polynomial coefficients for a polynomial of order N.
     """
-
-    # Derivatives of region
-    # Calculate the left/right derivatives with forward/backward differentiation.
-    #db_dz_left = (-3*b_region[0] + 4*b_region[1] - b_region[2]) / (2 * 0.001)
-    #db_dz_right = (3*b_region[-1] - 4*b_region[-2] + b_region[-3]) / (2 * 0.001)
-    #d2b_dz2_left = (2*b_region[0] - 5*b_region[1] + 4*b_region[2] - b_region[3]) / 0.001**2
-    #d2b_dz2_right = (2*b_region[-1] - 5*b_region[-2] + 4*b_region[-3] - b_region[-4]) / 0.001**2
-
-    #print("----------")
-    #print("db_dz_region[0]    = ", db_dz_left)
-    #print("d2b_dz2_region[0]  = ", db_dz_right)
-    #print("db_dz_region[-1]   = ", d2b_dz2_left)
-    #print("d2b_dz2_region[-1] = ", d2b_dz2_right)
 
     if degree >= 5:
         # Fit polynomial with boundary conditions
@@ -301,6 +242,11 @@ def fit_polynomial_matching(degree, z_region, b_region, boundaries, left):
 
     return bpol_reg
 
+# This function gets the function value, its derivative and its second derivative at the end points.
+# If sinusoid=True, the parameters in "object" are interpreted as the outcomes of the sinusoidal fit.
+# Then an analytical expression for the sinusoid and its derivatives is used to find the boundary values.
+# If sinusoid=False, the parameters in "object" are interpreted as the coefficients of a polynomial.
+# The derivatives of the polynomial is computed analytically and evaluated at the boundaries.
 def get_boundary_conditions(x, object, sinusoid):
     # Boundaries contains the values, derivatives and second derivatives at the boundary points.
     # Even entries contain the boundary values at the left side of the region in question.
@@ -340,6 +286,9 @@ def get_boundary_conditions(x, object, sinusoid):
 
     return boundaries
 
+# This function splits an array in a number of regions specified by num_regions.
+# It ensures that the sub-arrays have more-or less the same number of entries.
+# It returns a slices object that can immediately be used to iterate over a region.
 def get_balanced_slices(arr, num_regions):
     n = len(arr)
     base_size = n // num_regions  # Minimum elements per region
@@ -354,86 +303,112 @@ def get_balanced_slices(arr, num_regions):
         start = end
     return slices
 
-xsinesbounds = get_boundary_conditions(zx_regionsines, xpoptregsines, sinusoid=True)
-ysinesbounds = get_boundary_conditions(zy_regionsines, ypoptregsines, sinusoid=True)
+# This function expects z_region and b_region (the x- and y-values over which is to be fitted).
+# It requires the number of slices, as it calls get_balanced_slices to slice z_region and b_region.
+# It requires knowledge of if the fit is over the x-values or not and if it's on the left side or not.
+# It calls get_boundary_conditions to get the boundary values, taking into account on which side these are to be found.
+# It first fits a polynomial to the sinusoidal boundary condition. Then it continues to fit successive polynomials.
+def fit_poly_regions(z_region, b_region, num_slices, left, x):
+    slices = get_balanced_slices(z_region, num_slices)
+    fit_reg = np.zeros_like(z_region)
 
-# Print the boundary values of region 4.
-print("Region 4 x boundary values: ", xsinesbounds)
-print("Region 4 y boundary values: ", ysinesbounds)
+    # If left, it needs to iterate in the reverse direction.
+    if left:
+        slices.reverse()
 
+    # If x, it takes the values for the sinusoidal region of B_x.
+    if x:
+        z_sines = zx_regionsines
+        poptsines = xpoptregsines
+
+    # If !x, it takes the values for the sinusoidal region of B_y.
+    else:
+        z_sines = zy_regionsines
+        poptsines = ypoptregsines
+
+    # Iterates over the slices.
+    for ii in slices:
+        # Match a polynomial to the sinusoidal region first.
+        if ii == slices[0]:
+            # The x- and y-values of the current slice.
+            z_this = z_region[ii]
+            b_this = b_region[ii]
+
+            # Find boundary values and fit.
+            boundaries = get_boundary_conditions(z_sines, poptsines, sinusoid=True)
+            fit = fit_polynomial_matching(degree, z_this, b_this, boundaries, left)
+            poly = np.polynomial.Polynomial(fit)
+            fit_reg[ii] = poly(z_this)
+
+        # Then match a polynomial to the previous one.
+        # Note that it uses "poly" and "z_this" from the previous iteration when calling "boundaries()".
+        # Afterwards, the new "z_this" is declared and a new "poly" is found.
+        # This is because the slices object cannot easily be indexed using [ii-1] or something like that.
+        else:
+            boundaries = get_boundary_conditions(z_this, poly, sinusoid=False)
+
+            # The x- and y-values of the current slice.
+            z_this = z_region[ii]
+            b_this = b_region[ii]
+
+            # Fitting procedure.
+            fit = fit_polynomial_matching(degree, z_this, b_this, boundaries, left)
+            poly = np.polynomial.Polynomial(fit)
+            fit_reg[ii] = poly(z_this)
+
+    return fit_reg
+
+# The degree of the fitted polynomials.
 degree=3
 
-num_polys = 10
+# The number slices.
+# Also the number of separate polynomials fitted to a region.
+num_slices = 15
 
-xslicesleft  = get_balanced_slices(zx_regionleft,  num_polys)
-xslicesright = get_balanced_slices(zx_regionright, num_polys)
-yslicesleft  = get_balanced_slices(zy_regionleft,  num_polys)
-yslicesright = get_balanced_slices(zy_regionright, num_polys)
+# Get the data of the fit.
+xfit_regleft  = fit_poly_regions(zx_regionleft,  bx_regionleft,  num_slices, left=True,  x=True)
+xfit_regright = fit_poly_regions(zx_regionright, bx_regionright, num_slices, left=False, x=True)
+yfit_regleft  = fit_poly_regions(zy_regionleft,  by_regionleft,  num_slices, left=True,  x=False)
+yfit_regright = fit_poly_regions(zy_regionright, by_regionright, num_slices, left=False, x=False)
 
-# For left, we iterate backwards, because we want to start with the sinusoids.
-# Need to find a way to effectively deal with the parameters of the polynomials.
-for ii in xslicesleft[::-1]:
-    xpopt, xpcov = [], []
-    z_region = zx_regionleft[ii]
-    bx_region = bx_regionleft[ii]
-    # Treat the sinusoidal case first.
-    if ii == xslicesleft[-1]:
-        boundaries = get_boundary_conditions(zx_regionsines, xpoptregsines, sinusoid=True)
-        fit, cov = fit_polynomial_matching(degree, z_region, bx_region, boundaries, left=True)
-        xpopt.append(fit)
-        xpcov.append(cov)
-
-    else:
-        boundaries = get_boundary_conditions(zx_regionleft[ii-1], xpoptregsines[ii-1], sinusoid=False)
-        fit, cov = fit_polynomial_matching(degree, z_region, bx_region, boundaries, left=True)
-        xpopt.append(fit)
-        xpcov.append(cov)
-
-'''
 ########################################################################################################################
 # MERGE IT ALL TOGETHER
 ########################################################################################################################
 
-bx_fit = np.concatenate((xfit_regleft, xfit_regsines, xfitregright))
-by_fit = np.concatenate((yfit_regleft, yfit_regsines, yfitregright))
-bt_fit = np.sqrt(bx_fit**2 + by_fit**2)
+# Concatenate the polynomial regions at the ends of the sinusoidal region.
+bx_fit = np.concatenate((xfit_regleft, xfit_regsines, xfit_regright))
+by_fit = np.concatenate((yfit_regleft, yfit_regsines, yfit_regright))
 
-print(sc.integrate.cumulative_trapezoid(bx_fit, dx=dz))
-print(sc.integrate.cumulative_trapezoid(by_fit, dx=dz))
+# Calculate the magnitude of the magnetic field.
+bt_fit = np.sqrt(bx_fit**2 + by_fit**2)
 
 ########################################################################################################################
 # PLOTS
 ########################################################################################################################
+
+# Plot the data against the fit.
 fig1, (ax1, ax2, ax3) = plt.subplots(3)
 ax1.plot(z_values, bx_values)
 ax1.plot(z_values, bx_fit)
-#ax1.plot(zx_region1, xfit_reg1)
-#ax1.plot(zx_region2, xfit_reg2)
-#ax1.plot(zx_region3, xfit_reg3)
-#ax1.plot(zx_region4, xfit_reg4)
-#ax1.plot(zx_region5, xfit_reg5)
 ax2.plot(z_values, by_values)
 ax2.plot(z_values, by_fit)
-#ax2.plot(zy_region1, yfit_reg1)
-#ax2.plot(zy_region2, yfit_reg2)
-#ax2.plot(zy_region3, yfit_reg3)
-#ax2.plot(zy_region4, yfit_reg4)
-#ax2.plot(zy_region5, yfit_reg5)
 ax3.plot(z_values, bt_values)
 ax3.plot(z_values, bt_fit)
 
+# Label the graphs.
 ax1.set_title(f"Magnetic Field at (X, Y) = {xy_point}")
 ax3.set_xlabel("Longitudinal Position, $s$, [m]")
 ax1.set_ylabel("Horizontal Field, $B_x$, [T]")
 ax2.set_ylabel("Vertical Field, $B_y$, [T]")
 ax3.set_ylabel("Magnitude, $|B|$, [T]")
 
+# Make a legend.
 ax1.legend(["$B_x$ Data", "$B_x$ Fit"], loc="upper right")
 ax2.legend(["$B_y$ Data", "$B_y$ Fit"], loc="upper right")
 ax3.legend(["$|B|$ Data", "$|B|$ Fit"], loc="upper right")
 
+# Turn on the grids.
 ax1.grid()
 ax2.grid()
 ax3.grid()
 plt.show()
-'''
