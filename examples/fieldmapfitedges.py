@@ -149,8 +149,10 @@ def find_frequencies(x, y, dx, threshold):
     return amplitudes, k_values
 
 # Get the amplitudes and frequencies of the (co)sines present in the data.
-bx_fft_amps, bx_fft_k = find_frequencies(zx_regionsines, bx_regionsines, dz, threshold=0.05)
-by_fft_amps, by_fft_k = find_frequencies(zy_regionsines, by_regionsines, dz, threshold=0.05)
+# Played a bit with the threshold. Threshold=1 gives four sinusoids for B_x and three for B_y.
+# Threshold=2 gives three sinusoids for B_x and one for B_y and still a good fit.
+bx_fft_amps, bx_fft_k = find_frequencies(zx_regionsines, bx_regionsines, dz, threshold=2)
+by_fft_amps, by_fft_k = find_frequencies(zy_regionsines, by_regionsines, dz, threshold=2)
 
 # The amplitudes of the (co)sine terms are related to the Fourier Transform of the data.
 xcos_amp_guesses =  2 * dz * bx_fft_amps.real
@@ -186,6 +188,8 @@ ypoptregsines, ypcovregsines = curve_fit(sinusoid, zy_regionsines, by_regionsine
 bxfit_regsines = sinusoid(zx_regionsines, *xpoptregsines)
 byfit_regsines = sinusoid(zy_regionsines, *ypoptregsines)
 
+print(xpoptregsines.shape)
+print(ypoptregsines.shape)
 
 ########################################################################################################################
 # EDGE FITTING
