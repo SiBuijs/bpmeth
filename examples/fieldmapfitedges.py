@@ -13,6 +13,7 @@ from bpmeth import poly_fit
 
 plt.close("all")
 
+
 ########################################################################################################################
 # IMPORTING AND PREPARING THE DATA
 ########################################################################################################################
@@ -106,6 +107,7 @@ by_regionleft  = by_values[:yborderleft].copy()
 by_regionsines = by_values[yborderleft:yborderright].copy()
 by_regionright = by_values[yborderright:].copy()
 
+
 ########################################################################################################################
 # SINUSOID FITTING
 ########################################################################################################################
@@ -175,18 +177,6 @@ for ii in range(len(by_fft_k)):
     yparams[3*ii]     = ycos_amp_guesses[ii]
     yparams[3*ii + 1] = ysin_amp_guesses[ii]
     yparams[3*ii + 2] = 2 * np.pi * by_fft_k[ii]
-
-# These frequencies have been found before using a Fourier Transform.
-# As stated before, B_x contains two modes and B_y only one.
-# The factor of 2pi used to be in the sinusoid function, but this is a bit inconvenient, so I moved here.
-x_freqs = [2*np.pi*19, 2*np.pi*37]
-y_freqs = [2*np.pi*28, 2*np.pi*56]
-
-# Initial parameter guesses [A1.1, A1.2, freq1, A2.1, A2.2, freq2]
-# These parameters were found from looking at the data for the amplitudes
-# and a Fourier transform of the data for the frequencies.
-x_initial_guess = np.array([0.29, 0.031, x_freqs[0], 0.083, -0.1, x_freqs[1]])
-y_initial_guess = np.array([0.3, 0.8, y_freqs[0]])
 
 # Fit the curve.
 xpoptregsines, xpcovregsines = curve_fit(sinusoid, zx_regionsines, bx_regionsines, p0=xparams)
@@ -415,30 +405,6 @@ def fit_poly_regions(z_region, b_region, num_slices, left, x):
 # The degree of the fitted polynomials.
 degree=3
 
-# This is just to try what effect it has if I choose the total number of slices for the entire region.
-# Then I redistribute the slices over the three regions according to their ratios.
-xnum_slices = 300
-ynum_slices = 160
-
-# NOTE: Turns out 200 is better for y but worse for x.
-# NOTE: Similarly, 300 is better for x but worse for y.
-
-# The number slices.
-# Also the number of separate polynomials fitted to a region.
-xleftratio  = xborderleft / 2200
-xsineratio = (xborderright - xborderleft) / 2200
-xrightratio = (2200 - xborderright) / 2200
-yleftratio = yborderleft / 2200
-ysineratio = (yborderright - yborderleft) / 2200
-yrightratio = (2200 - yborderright) / 2200
-
-print("xleftslices  = ", int(xnum_slices * xleftratio))
-print("xsineslices  = ", int(xnum_slices * xsineratio))
-print("xrightrights = ", int(xnum_slices * xrightratio))
-print("yleftslices  = ", int(ynum_slices * yleftratio))
-print("ysineslices  = ", int(ynum_slices * ysineratio))
-print("yrightrights = ", int(ynum_slices * yrightratio))
-
 xleftslices  = 23 # Good: 23
 xrightslices = 21 # Good: 21
 yleftslices  = 20 # Good: 20
@@ -450,6 +416,7 @@ bxfit_regright = fit_poly_regions(zx_regionright, bx_regionright, xrightslices, 
 byfit_regleft  = fit_poly_regions(zy_regionleft, by_regionleft, yleftslices, left=True, x=False)
 byfit_regright = fit_poly_regions(zy_regionright, by_regionright, yrightslices, left=False, x=False)
 
+# The following is not used, but I will keep it here in case we want to use it later anyway.
 '''
 ########################################################################################################################
 # FIT EVERYTHING TO POLYNOMIALS
@@ -502,10 +469,16 @@ def modified_fit_poly_regions(z_region, b_region, num_slices, left):
 
 degree = 3
 
+# This is just to try what effect it has if I choose the total number of slices for the entire region.
+# Then I redistribute the slices over the three regions according to their ratios.
+xnum_slices = 300
+ynum_slices = 160
+
 bx_polyfit = modified_fit_poly_regions(z_values, bx_values, xnum_slices, left=True)
 by_polyfit = modified_fit_poly_regions(z_values, by_values, ynum_slices, left=True)
 bt_polyfit = np.sqrt(bx_polyfit**2 + by_polyfit**2)
 '''
+
 ########################################################################################################################
 # MERGE IT ALL TOGETHER
 ########################################################################################################################
@@ -522,6 +495,7 @@ bx_trapz = sc.integrate.cumulative_trapezoid(bx_values,  dx=dz)
 by_trapz = sc.integrate.cumulative_trapezoid(by_values,  dx=dz)
 bx_fit_trapz = sc.integrate.cumulative_trapezoid(bx_fit, dx=dz)
 by_fit_trapz = sc.integrate.cumulative_trapezoid(by_fit, dx=dz)
+
 
 ########################################################################################################################
 # PLOTS
