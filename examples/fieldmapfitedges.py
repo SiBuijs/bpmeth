@@ -76,15 +76,15 @@ print(by_peaks[6])
 # The region between -1100 and xborderleft goes from the start until the first peak. We fit a series of polynomials.
 # The region between xborderleft and xborderright encompasses the sinusoidal region in the middle. We fit a sinusoid.
 # The region between xborderright adn 1100 goes from the last peak until the end. We fit a series of polynomials.
-xborderleft  = bx_peaks[2]      # z = -974
-xborderright = bx_peaks[-3]     # z =  970
+xborderleft  = bx_valleys[1]      # z = -938
+xborderright = bx_valleys[-2]     # z =  952
 
 # Splits the magnetic field into five regions. The regions are decided based on the peaks and valleys of B_y.
 # The region between -1100 and yborderleft goes from the start until the first peak. We fit a series of polynomials.
 # The region between yborderleft and yborderright encompasses the sinusoidal region in the middle. We fit a sinusoid.
 # The region between yborderright adn 1100 goes from the last peak until the end. We fit a series of polynomials.
-yborderleft  = by_valleys[2]    # z = -947
-yborderright = by_valleys[-3]   # z =  925
+yborderleft  = by_peaks[2]    # z = -929
+yborderright = by_valleys[-4]   # z =  871
 
 # Assign the z-arrays for each region.
 zx_regionleft  = z_values[:xborderleft].copy()
@@ -127,61 +127,54 @@ def sinusoid(x, *params):
 
     return y
 
+# This function finds the amplitudes and frequencies of the (co)sines present in the data.
 def find_frequencies(x, y, dx, threshold):
+    # Calculate the Fourier Transform of the data and find the frequency spectrum.
     fft = sc.fft.fft(y)
     fftfreq = sc.fft.fftfreq(len(x), dx)
+
+    # Only keep the positive part.
     fft = fft[fftfreq > 0]
     fftfreq = fftfreq[fftfreq > 0]
-    fftpeaks = find_peaks(fft, threshold=threshold)
+
+    # Find the peaks in the Fourier Transform applying the threshold.
+    fftpeaks = find_peaks(np.abs(fft), threshold=threshold)
+
+    # The corresponding amplitudes and k-values are extracted from the location of the peaks.
     amplitudes = fft[fftpeaks[0]]
     k_values = fftfreq[fftpeaks[0]]
 
     return amplitudes, k_values
 
-bx_fft_amps, bx_fft_k = find_frequencies(zx_regionsines, bx_regionsines, dz, threshold=0.1)
-by_fft_amps, by_fft_k = find_frequencies(zy_regionsines, by_regionsines, dz, threshold=0.1)
+# Get the amplitudes and frequencies of the (co)sines present in the data.
+bx_fft_amps, bx_fft_k = find_frequencies(zx_regionsines, bx_regionsines, dz, threshold=0.05)
+by_fft_amps, by_fft_k = find_frequencies(zy_regionsines, by_regionsines, dz, threshold=0.05)
 
-xcos_amp_guesses = 2 * dz * bx_fft_amps.real
-xsin_amp_guesses = 2 * dz * bx_fft_amps.imag
-ycos_amp_guesses = 2 * dz * bx_fft_amps.real
-ysin_amp_guesses = 2 * dz * by_fft_amps.imag
+# The amplitudes of the (co)sine terms are related to the Fourier Transform of the data.
+xcos_amp_guesses =  2 * dz * bx_fft_amps.real
+xsin_amp_guesses = -2 * dz * bx_fft_amps.imag
+ycos_amp_guesses =  2 * dz * by_fft_amps.real
+ysin_amp_guesses = -2 * dz * by_fft_amps.imag
 
-print("B_x cos amplitudes: ", xcos_amp_guesses)
-print("B_x sin amplitudes: ", xsin_amp_guesses)
-print("B_x frequencies:    ", bx_fft_k)
-
-print("B_y cos amplitudes: ", ycos_amp_guesses)
-print("B_y sin amplitudes: ", ysin_amp_guesses)
-print("B_y frequencies:", by_fft_k)
+# An empty array. It will be arranged as follows:
+# [A1.1, A1.2, freq1, A2.1, A2.2, freq2, ...]
+# So the amplitude of the cosines are the 0, 3, 6, ... entries,
+# The amplitude of the sines are the 1, 4, 7, ... entries
+# The frequencies are the 2, 5, 8, ... entries.
+xparams = np.zeros(len(bx_fft_k)*3)
 
 for ii in range(len(bx_fft_k)):
-    xparams = np.zeros(len(bx_fft_k)*3)
     xparams[3*ii]     = xcos_amp_guesses[ii]
     xparams[3*ii + 1] = xsin_amp_guesses[ii]
-    xparams[3*ii + 2] = bx_fft_k[ii]
+    xparams[3*ii + 2] = 2 * np.pi * bx_fft_k[ii]
+
+# Defined the same way as above, but for B_y.
+yparams = np.zeros(len(by_fft_k)*3)
 
 for ii in range(len(by_fft_k)):
-    yparams = np.zeros(len(by_fft_k)*3)
     yparams[3*ii]     = ycos_amp_guesses[ii]
     yparams[3*ii + 1] = ysin_amp_guesses[ii]
-    yparams[3*ii + 2] = by_fft_k[ii]
-
-# NOTE: Something goes wrong with finding the peaks in the Fourier Transform.
-# Investigate further.
-
-'''
-bx_fft = sc.fft.rfft(bx_regionsines)
-by_fft = sc.fft.rfft(by_regionsines)
-x_k_axis = sc.fft.fftfreq(len(zx_regionsines), dz)
-y_k_axis = sc.fft.fftfreq(len(zy_regionsines), dz)
-bx_fft   = bx_fft[x_k_axis > 0]
-by_fft   = by_fft[y_k_axis > 0]
-x_k_axis = x_k_axis[x_k_axis > 0]
-y_k_axis = y_k_axis[y_k_axis > 0]
-xfft_peaks = find_peaks(bx_fft, threshold=0.1)[0]
-yfft_peaks = find_peaks(by_fft, threshold=0.1)[0]
-'''
-
+    yparams[3*ii + 2] = 2 * np.pi * by_fft_k[ii]
 
 # These frequencies have been found before using a Fourier Transform.
 # As stated before, B_x contains two modes and B_y only one.
@@ -196,22 +189,12 @@ x_initial_guess = np.array([0.29, 0.031, x_freqs[0], 0.083, -0.1, x_freqs[1]])
 y_initial_guess = np.array([0.3, 0.8, y_freqs[0]])
 
 # Fit the curve.
-xpoptregsines, xpcovregsines = curve_fit(sinusoid, zx_regionsines, bx_regionsines, p0=x_initial_guess)
-ypoptregsines, ypcovregsines = curve_fit(sinusoid, zy_regionsines, by_regionsines, p0=y_initial_guess)
-
-print("From fit: ", xpoptregsines)
-print("From fft: ", xparams)
-print("From fit: ", ypoptregsines)
-print("From fft: ", yparams)
+xpoptregsines, xpcovregsines = curve_fit(sinusoid, zx_regionsines, bx_regionsines, p0=xparams)
+ypoptregsines, ypcovregsines = curve_fit(sinusoid, zy_regionsines, by_regionsines, p0=yparams)
 
 # Calculates the output of the fit.
 bxfit_regsines = sinusoid(zx_regionsines, *xpoptregsines)
 byfit_regsines = sinusoid(zy_regionsines, *ypoptregsines)
-
-
-########################################################################################################################
-# FIT SEEMINGLY PERIODIC REGION WITH POLYNOMIALS
-########################################################################################################################
 
 
 ########################################################################################################################
@@ -387,20 +370,20 @@ def fit_poly_regions(z_region, b_region, num_slices, left, x):
     if left:
         slices.reverse()
 
-    # If x, it takes the values for the sinusoidal region of B_x.
-    if x:
-        z_sines = zx_regionsines
-        poptsines = xpoptregsines
-
-    # If !x, it takes the values for the sinusoidal region of B_y.
-    else:
-        z_sines = zy_regionsines
-        poptsines = ypoptregsines
-
     # Iterates over the slices.
     for ii in slices:
         # Match a polynomial to the sinusoidal region first.
         if ii == slices[0]:
+            # If x, it takes the values for the sinusoidal region of B_x.
+            if x:
+                z_sines = zx_regionsines
+                poptsines = xpoptregsines
+
+                # If !x, it takes the values for the sinusoidal region of B_y.
+            else:
+                z_sines = zy_regionsines
+                poptsines = ypoptregsines
+
             # The x- and y-values of the current slice.
             z_this = z_region[ii]
             b_this = b_region[ii]
@@ -432,16 +415,97 @@ def fit_poly_regions(z_region, b_region, num_slices, left, x):
 # The degree of the fitted polynomials.
 degree=3
 
+# This is just to try what effect it has if I choose the total number of slices for the entire region.
+# Then I redistribute the slices over the three regions according to their ratios.
+xnum_slices = 300
+ynum_slices = 160
+
+# NOTE: Turns out 200 is better for y but worse for x.
+# NOTE: Similarly, 300 is better for x but worse for y.
+
 # The number slices.
 # Also the number of separate polynomials fitted to a region.
-num_slices = 15
+xleftratio  = xborderleft / 2200
+xsineratio = (xborderright - xborderleft) / 2200
+xrightratio = (2200 - xborderright) / 2200
+yleftratio = yborderleft / 2200
+ysineratio = (yborderright - yborderleft) / 2200
+yrightratio = (2200 - yborderright) / 2200
+
+print("xleftslices  = ", int(xnum_slices * xleftratio))
+print("xsineslices  = ", int(xnum_slices * xsineratio))
+print("xrightrights = ", int(xnum_slices * xrightratio))
+print("yleftslices  = ", int(ynum_slices * yleftratio))
+print("ysineslices  = ", int(ynum_slices * ysineratio))
+print("yrightrights = ", int(ynum_slices * yrightratio))
+
+xleftslices  = 23 # Good: 23
+xrightslices = 21 # Good: 21
+yleftslices  = 20 # Good: 20
+yrightslices = 30 # Good: 30
 
 # Get the data of the fit.
-bxfit_regleft  = fit_poly_regions(zx_regionleft, bx_regionleft, num_slices, left=True, x=True)
-bxfit_regright = fit_poly_regions(zx_regionright, bx_regionright, num_slices, left=False, x=True)
-byfit_regleft  = fit_poly_regions(zy_regionleft, by_regionleft, num_slices, left=True, x=False)
-byfit_regright = fit_poly_regions(zy_regionright, by_regionright, num_slices, left=False, x=False)
+bxfit_regleft  = fit_poly_regions(zx_regionleft, bx_regionleft, xleftslices, left=True, x=True)
+bxfit_regright = fit_poly_regions(zx_regionright, bx_regionright, xrightslices, left=False, x=True)
+byfit_regleft  = fit_poly_regions(zy_regionleft, by_regionleft, yleftslices, left=True, x=False)
+byfit_regright = fit_poly_regions(zy_regionright, by_regionright, yrightslices, left=False, x=False)
 
+'''
+########################################################################################################################
+# FIT EVERYTHING TO POLYNOMIALS
+########################################################################################################################
+# This function expects z_region and b_region (the x- and y-values over which is to be fitted).
+# It requires the number of slices, as it calls get_balanced_slices to slice z_region and b_region.
+# It requires knowledge of if the fit is over the x-values or not and if it's on the left side or not.
+# It calls get_boundary_conditions to get the boundary values, taking into account on which side these are to be found.
+# It first fits a polynomial to the sinusoidal boundary condition. Then it continues to fit successive polynomials.
+def modified_fit_poly_regions(z_region, b_region, num_slices, left):
+    slices = get_balanced_slices(z_region, num_slices)
+    fit_reg = np.zeros_like(z_region)
+
+    # If left, it needs to iterate in the reverse direction.
+    if left:
+        slices.reverse()
+
+    # Iterates over the slices.
+    for ii in slices:
+        # Match a polynomial to the sinusoidal region first.
+        if ii == slices[0]:
+            # The x- and y-values of the current slice.
+            z_this = z_region[ii]
+            b_this = b_region[ii]
+
+            # Find boundary values and fit.
+            # If we fit everything with polynomials, all left boundaries are zero.
+            boundaries = [0, 0, 0, 0, 0, 0]
+            fit = fit_polynomial_matching(degree, z_this, b_this, boundaries, left)
+            poly = np.polynomial.Polynomial(fit)
+            fit_reg[ii] = poly(z_this)
+
+        # Then match a polynomial to the previous one.
+        # Note that it uses "poly" and "z_this" from the previous iteration when calling "boundaries()".
+        # Afterwards, the new "z_this" is declared and a new "poly" is found.
+        # This is because the slices object cannot easily be indexed using [ii-1] or something like that.
+        else:
+            boundaries = get_boundary_conditions(z_this, poly, sinusoid=False)
+
+            # The x- and y-values of the current slice.
+            z_this = z_region[ii]
+            b_this = b_region[ii]
+
+            # Fitting procedure.
+            fit = fit_polynomial_matching(degree, z_this, b_this, boundaries, left)
+            poly = np.polynomial.Polynomial(fit)
+            fit_reg[ii] = poly(z_this)
+
+    return fit_reg
+
+degree = 3
+
+bx_polyfit = modified_fit_poly_regions(z_values, bx_values, xnum_slices, left=True)
+by_polyfit = modified_fit_poly_regions(z_values, by_values, ynum_slices, left=True)
+bt_polyfit = np.sqrt(bx_polyfit**2 + by_polyfit**2)
+'''
 ########################################################################################################################
 # MERGE IT ALL TOGETHER
 ########################################################################################################################
@@ -488,9 +552,9 @@ ax2.set_ylabel("Vertical Field, $B_y$, [T]")
 ax3.set_ylabel("Magnitude, $|B|$, [T]")
 
 # Make a legend.
-ax1.legend(["$B_x$ Data", "$B_x$ Fit"], loc="upper right")
-ax2.legend(["$B_y$ Data", "$B_y$ Fit"], loc="upper right")
-ax3.legend(["$|B|$ Data", "$|B|$ Fit"], loc="upper right")
+ax1.legend(["$B_x$ Data", "$B_x$ Section Fit"], loc="upper right")
+ax2.legend(["$B_y$ Data", "$B_y$ Section Fit"], loc="upper right")
+ax3.legend(["$|B|$ Data", "$|B|$ Section Fit"], loc="upper right")
 
 # Turn on the grids.
 ax1.grid()
@@ -506,6 +570,12 @@ ax4.plot(z_values[:-1], bx_fit_trapz)
 ax5.plot(z_values[:-1], by_trapz)
 ax5.plot(z_values[:-1], by_fit_trapz)
 
+# Add vertical lines at different positions for each subplot
+ax4.axvline(x=z_values[xborderleft],  color='k', linestyle='--', linewidth=1)
+ax4.axvline(x=z_values[xborderright], color='k', linestyle='--', linewidth=1)
+ax5.axvline(x=z_values[yborderleft],  color='k', linestyle='--', linewidth=1)
+ax5.axvline(x=z_values[yborderright], color='k', linestyle='--', linewidth=1)
+
 # Label the graphs.
 ax4.set_title(f"Integral of Magnetic Field at (X, Y) = {xy_point}")
 ax5.set_xlabel("Longitudinal Position, $s$, [m]")
@@ -513,8 +583,8 @@ ax4.set_ylabel("Horizontal Field, $∫ B_x ds$, [Tm]")
 ax5.set_ylabel("Vertical Field, $∫ B_y ds$, [Tm]")
 
 # Make a legend.
-ax4.legend(["$∫ B_x ds$ Data", "$∫ B_x ds$ Fit"], loc="upper right")
-ax5.legend(["$∫ B_y ds$ Data+", "$∫ B_y ds$ Fit"], loc="upper right")
+ax4.legend(["$∫ B_x ds$ Data", "$∫ B_x ds$ Region Fit"], loc="lower right")
+ax5.legend(["$∫ B_y ds$ Data", "$∫ B_y ds$ Region Fit"], loc="upper right")
 
 # Turn on the grids.
 ax4.grid()
