@@ -10,9 +10,15 @@ import pandas as pd
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 from bpmeth import poly_fit
+from wiggler_class import Wiggler
+
 
 plt.close("all")
+########################################################################################################################
+# TEST THE CLASS
+########################################################################################################################
 
+Test_Wiggler = Wiggler(file_path='example_data/knot_map_test.txt', xy_point=(0, 0), dz=0.001)
 
 ########################################################################################################################
 # IMPORTING AND PREPARING THE DATA
@@ -32,6 +38,8 @@ def parse_to_dataframe(file_path):
 # Parse the data from knot_map_text.txt
 file_path = 'example_data/knot_map_test.txt'
 df = parse_to_dataframe(file_path)
+
+
 
 # Select at which transverse coordinates (x, y) we want to evaluate the field (usually (0, 0)).
 # The subsetz indicates that it takes the z-axis as the independent coordinate.
@@ -68,10 +76,6 @@ bx_peaks   = bx_peaks[0][np.logical_and(bx_peaks[0] > 99, bx_peaks[0] < 2100)]
 by_peaks   = by_peaks[0][np.logical_and(by_peaks[0] > 99, by_peaks[0] < 2100)]
 bx_valleys = bx_valleys[0][np.logical_and(bx_valleys[0] > 99, bx_valleys[0] < 2100)]
 by_valleys = by_valleys[0][np.logical_and(by_valleys[0] > 99, by_valleys[0] < 2100)]
-
-# Two peaks between which it is convenient to fit a polynomial.
-print(by_peaks[3])
-print(by_peaks[6])
 
 # Splits the magnetic field into five regions. The regions are decided based on the peaks and valleys of B_x.
 # The region between -1100 and xborderleft goes from the start until the first peak. We fit a series of polynomials.
@@ -187,9 +191,6 @@ ypoptregsines, ypcovregsines = curve_fit(sinusoid, zy_regionsines, by_regionsine
 # Calculates the output of the fit.
 bxfit_regsines = sinusoid(zx_regionsines, *xpoptregsines)
 byfit_regsines = sinusoid(zy_regionsines, *ypoptregsines)
-
-print(xpoptregsines.shape)
-print(ypoptregsines.shape)
 
 ########################################################################################################################
 # EDGE FITTING
@@ -359,6 +360,7 @@ def get_balanced_slices(arr, num_regions):
 def fit_poly_regions(z_region, b_region, num_slices, left, x):
     slices = get_balanced_slices(z_region, num_slices)
     fit_reg = np.zeros_like(z_region)
+    polys = []
 
     # If left, it needs to iterate in the reverse direction.
     if left:
@@ -386,6 +388,7 @@ def fit_poly_regions(z_region, b_region, num_slices, left, x):
             boundaries = get_boundary_conditions(z_sines, poptsines, sinusoid=True)
             fit = fit_polynomial_matching(degree, z_this, b_this, boundaries, left)
             poly = np.polynomial.Polynomial(fit)
+            polys.append(poly)
             fit_reg[ii] = poly(z_this)
 
         # Then match a polynomial to the previous one.
@@ -402,9 +405,10 @@ def fit_poly_regions(z_region, b_region, num_slices, left, x):
             # Fitting procedure.
             fit = fit_polynomial_matching(degree, z_this, b_this, boundaries, left)
             poly = np.polynomial.Polynomial(fit)
+            polys.append(poly)
             fit_reg[ii] = poly(z_this)
 
-    return fit_reg
+    return fit_reg, polys
 
 # The degree of the fitted polynomials.
 degree=3
@@ -415,10 +419,10 @@ yleftslices  = 20 # Good: 20
 yrightslices = 30 # Good: 30
 
 # Get the data of the fit.
-bxfit_regleft  = fit_poly_regions(zx_regionleft, bx_regionleft, xleftslices, left=True, x=True)
-bxfit_regright = fit_poly_regions(zx_regionright, bx_regionright, xrightslices, left=False, x=True)
-byfit_regleft  = fit_poly_regions(zy_regionleft, by_regionleft, yleftslices, left=True, x=False)
-byfit_regright = fit_poly_regions(zy_regionright, by_regionright, yrightslices, left=False, x=False)
+bxfit_regleft, bxfit_polysleft   = fit_poly_regions(zx_regionleft, bx_regionleft, xleftslices, left=True, x=True)
+bxfit_regright, bxfit_polysright = fit_poly_regions(zx_regionright, bx_regionright, xrightslices, left=False, x=True)
+byfit_regleft, byfit_polysleft   = fit_poly_regions(zy_regionleft, by_regionleft, yleftslices, left=True, x=False)
+byfit_regright, byfit_polysright = fit_poly_regions(zy_regionright, by_regionright, yrightslices, left=False, x=False)
 
 # The following is not used, but I will keep it here in case we want to use it later anyway.
 '''
@@ -482,6 +486,17 @@ bx_polyfit = modified_fit_poly_regions(z_values, bx_values, xnum_slices, left=Tr
 by_polyfit = modified_fit_poly_regions(z_values, by_values, ynum_slices, left=True)
 bt_polyfit = np.sqrt(bx_polyfit**2 + by_polyfit**2)
 '''
+
+########################################################################################################################
+# DEFINE FIELD AS FUNCTIONS
+########################################################################################################################
+
+def b_field_func(z, *params):
+    # params = [borders, left_poly, right_poly, sinusoids]
+    borders = params[0]
+    left_poly = params[1]
+    right_poly = params[2]
+    sinusoids = params[3]
 
 ########################################################################################################################
 # MERGE IT ALL TOGETHER
