@@ -43,7 +43,7 @@ df = parse_to_dataframe(file_path)
 
 # Select at which transverse coordinates (x, y) we want to evaluate the field (usually (0, 0)).
 # The subsetz indicates that it takes the z-axis as the independent coordinate.
-xy_point = (0, 0)
+xy_point = (-1, 1)
 subsetz = df.xs(xy_point, level=['X', 'Y'])
 
 # Extract the transverse fields and the longitudinal axis as numpy arrays.
