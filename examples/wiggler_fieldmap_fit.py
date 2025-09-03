@@ -10,16 +10,9 @@ import pandas as pd
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 from bpmeth import poly_fit
-from wiggler_class import Wiggler
 
 
 plt.close("all")
-########################################################################################################################
-# TEST THE CLASS
-########################################################################################################################
-
-Test_Wiggler = Wiggler(file_path='example_data/knot_map_test.txt', xy_point=(0, 0), dz=0.001)
-
 ########################################################################################################################
 # IMPORTING AND PREPARING THE DATA
 ########################################################################################################################
