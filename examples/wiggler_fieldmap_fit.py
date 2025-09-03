@@ -89,7 +89,7 @@ xborderright = bx_valleys[-2]     # z =  952
 # The region between yborderleft and yborderright encompasses the sinusoidal region in the middle. We fit a sinusoid.
 # The region between yborderright adn 1100 goes from the last peak until the end. We fit a series of polynomials.
 yborderleft  = by_peaks[2]    # z = -929
-yborderright = by_valleys[-4]   # z =  871
+yborderright = by_peaks[-3]   # z =  871
 
 # Assign the z-arrays for each region.
 zx_regionleft  = z_values[:xborderleft].copy()
@@ -523,13 +523,17 @@ by_fit_trapz = sc.integrate.cumulative_trapezoid(by_fit, dx=dz)
 # Functions
 #########################################################################
 # Plot the data against the fit.
-fig1, (ax1, ax2, ax3) = plt.subplots(3)
+fig1, (ax1, ax2) = plt.subplots(2, figsize=(10, 4), constrained_layout=True)
 ax1.plot(z_values, bx_values)
-ax1.plot(z_values, bx_fit)
+ax1.plot(zx_regionleft, bx_regionleft)
+ax1.plot(zx_regionsines, bx_regionsines)
+ax1.plot(zx_regionright, bx_regionright)
 ax2.plot(z_values, by_values)
-ax2.plot(z_values, by_fit)
-ax3.plot(z_values, bt_values)
-ax3.plot(z_values, bt_fit)
+ax2.plot(zy_regionleft, by_regionleft)
+ax2.plot(zy_regionsines, by_regionsines)
+ax2.plot(zy_regionright, by_regionright)
+#ax3.plot(z_values, bt_values)
+#ax3.plot(z_values, bt_fit)
 
 # Add vertical lines at different positions for each subplot
 ax1.axvline(x=z_values[xborderleft],  color='k', linestyle='--', linewidth=1)
@@ -539,20 +543,20 @@ ax2.axvline(x=z_values[yborderright], color='k', linestyle='--', linewidth=1)
 
 # Label the graphs.
 ax1.set_title(f"Magnetic Field at (X, Y) = {xy_point}")
-ax3.set_xlabel("Longitudinal Position, $s$, [m]")
+ax2.set_xlabel("Longitudinal Position, $s$, [m]")
 ax1.set_ylabel("Horizontal Field, $B_x$, [T]")
 ax2.set_ylabel("Vertical Field, $B_y$, [T]")
-ax3.set_ylabel("Magnitude, $|B|$, [T]")
+#ax3.set_ylabel("Magnitude, $|B|$, [T]")
 
 # Make a legend.
-ax1.legend(["$B_x$ Data", "$B_x$ Section Fit"], loc="upper right")
-ax2.legend(["$B_y$ Data", "$B_y$ Section Fit"], loc="upper right")
-ax3.legend(["$|B|$ Data", "$|B|$ Section Fit"], loc="upper right")
+ax1.legend(["$B_x$ Data", "$B_x$ Left Fit", "$B_x$ Sine Fit", "$B_x$ Right Fit"], loc="lower right")
+ax2.legend(["$B_y$ Data", "$B_y$ Left Fit", "$B_y$ Sine Fit", "$B_y$ Right Fit"], loc="lower right")
+#ax3.legend(["$|B|$ Data", "$|B|$ Section Fit"], loc="upper right")
 
 # Turn on the grids.
 ax1.grid()
 ax2.grid()
-ax3.grid()
+#ax3.grid()
 
 # Primitives
 #########################################################################

@@ -12,10 +12,12 @@ length=10
 k=2
 amp=0.3
 b1 = f"{amp}*cos({k}*s)"
+a0 = f"{-amp}*sin({k}*s)"
 
-wiggler = bpmeth.GeneralVectorPotential(hs=f"{curv}", b=(f"{b1}",))
+wiggler = bpmeth.GeneralVectorPotential(hs=f"{curv}",a=(f"{a0}",),b=(f"{b1}",))
 # wiggler = bpmeth.FringeVectorPotential(hs=f"{curv}", b1=b1) # Does the same as above
 wiggler.plotfield_yz()
+wiggler.plotfield_xz()
 
 #A_wiggler = wiggler.get_Aval(p_sp)
 H_wiggler = bpmeth.Hamiltonian(length, curv, wiggler)
