@@ -39,21 +39,3 @@ Test_Wiggler.tune_slices_for_zero_integral(field="both", tradeoff_mse=0.0,
 Test_Wiggler.plot_fields()
 Test_Wiggler.plot_integral()
 
-'''
-# We change the axis at which we evaluate the field.
-Test_Wiggler.xy_point = (-1, 1)
-
-# It turns out that the fit is not very good with 3 modes, so we increase the number of modes to 5.
-Test_Wiggler.n_modes_x = 5
-Test_Wiggler.n_modes_y = 5
-
-# We fit and plot again.
-Test_Wiggler.fit()
-Test_Wiggler.tune_slices_for_zero_integral(field="both", tradeoff_mse=1e-6,
-                                           left_candidates=range(8, 40),
-                                           right_candidates=range(8, 40),
-                                           verbose=True)
-
-Test_Wiggler.plot_fields()
-Test_Wiggler.plot_integral()
-'''

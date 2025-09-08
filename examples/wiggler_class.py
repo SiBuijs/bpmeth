@@ -5,7 +5,7 @@ import scipy as sc
 from scipy.signal import find_peaks
 from scipy.optimize import curve_fit
 from numpy.polynomial import Polynomial
-from bpmeth import poly_fit  # assumes poly_fit.poly_fit(...) like in your code
+from bpmeth import poly_fit
 
 
 # ===== Small helper classes (no type hints in function signatures) =====
@@ -264,8 +264,8 @@ class Wiggler:
         self.fields["By"].data = subsetz["By"].to_numpy()
 
         dzs = np.diff(self.z_full)
-        if not np.allclose(dzs, dzs[0], rtol=1e-6, atol=1e-12) and self.verbose:
-            print("Warning: z grid not perfectly uniform; using mean spacing in FFT.")
+        #if not np.allclose(dzs, dzs[0], rtol=1e-6, atol=1e-12) and self.verbose:
+        #    print("Warning: z grid not perfectly uniform; using mean spacing in FFT.")
 
     # ---------------- Borders ----------------
     def _find_borders(self):
