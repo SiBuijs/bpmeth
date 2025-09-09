@@ -48,6 +48,7 @@ dz = 0.001
 z_values = z_values * dz               # Convert to meters, more stable for the polynomials.
 bx_values = subsetz['Bx'].to_numpy()
 by_values = subsetz['By'].to_numpy()
+bz_values = subsetz['Bz'].to_numpy()
 
 #bz_values = subsetz['Bz'].to_numpy()
 bt_values = np.sqrt(bx_values**2 + by_values**2)
