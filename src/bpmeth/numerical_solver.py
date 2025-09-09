@@ -4,14 +4,15 @@ from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
 from .generate_expansion import FieldExpansion
 from .frames import Frame, BendFrame
+import numba as nb
 
 
 class Hamiltonian:
-
     isthick = True
 
-    def __init__(self, length, curv, vectp):
+    def __init__(self, length, curv, vectp, s_start=0):
         self.length = length
+        self.s_start = s_start
         self.curv = curv
         self.vectp = vectp
         self.angle = curv * length
@@ -28,16 +29,21 @@ class Hamiltonian:
 
         sqrt = coords._m.sqrt
         tmp1 = sqrt(
-            1 + 2 * ptau / beta0 + ptau**2 - (px - A[0]) ** 2 - (py - A[1]) ** 2
+            1 + 2 * ptau / beta0 + ptau ** 2 - (px - A[0]) ** 2 - (py - A[1]) ** 2
         )
         H = ptau / beta0 - (1 + h * x) * (tmp1 + A[2])
 
         return H
 
-    def get_vectorfield(self, coords=None, lambdify=True, beta0=1):
+    def get_A(self, x, y, s):
+        Ax, Ay, As = self.vectp.get_A(lambdify=True)
+        return Ax(x, y, s), Ay(x, y, s), As(x, y, s)
+
+    def get_vectorfield(self, coords=None, lambdify=True):
         if coords is None:
+            beta0 = sp.symbols("beta0", real=True, positive=True)
             coords = SympyParticle(beta0=beta0)
-        x, y, tau = coords.x, coords.y, coords.beta0 * coords.zeta
+        x, y, tau = coords.x, coords.y, coords.tau
         px, py, ptau = coords.px, coords.py, coords.ptau
         H = self.get_H(coords)
         fx = H.diff(px)
@@ -51,57 +57,66 @@ class Hamiltonian:
         if lambdify:
             qp = (x, y, tau, px, py, ptau)
             s = coords.s
-            return sp.lambdify((s, qp), qpdot, modules="numpy")
+            f = sp.lambdify((s, qp, beta0), qpdot, modules="numpy")
+
+            f_numba = nb.njit(f)
+            return f_numba
         return qpdot
 
-    def solve(self, qp0, s_span=None, ivp_opt={}, backtrack=False):
+    def solve(self, qp0, s_span=None, ivp_opt={}, backtrack=False, beta0=1):
         ivp_opt = ivp_opt.copy()
         if s_span is None and not backtrack:
-             s_span = [0, self.length]
+            s_span = [self.s_start, self.length + self.s_start]
         if backtrack:
             if s_span is None:
-                s_span = [self.length, 0]
+                s_span = [self.length + self.s_start, self.s_start]
             assert s_span[0] > s_span[1], "s_span not compatible with backtracking"
 
         if "t_eval" not in ivp_opt:
             ivp_opt["t_eval"] = np.linspace(s_span[0], s_span[1], 500)
         if "rtol" not in ivp_opt:
-            ivp_opt["rtol"] = 1e-4
+            ivp_opt["rtol"] = 1e-5
         if "atol" not in ivp_opt:
-            ivp_opt["atol"] = 1e-7
+            ivp_opt["atol"] = 1e-8
 
         f = self.vectorfield
-        sol = solve_ivp(f, s_span, qp0, **ivp_opt)
+        sol = solve_ivp(f.py_func, s_span, qp0, args=(beta0,), **ivp_opt)
         return sol
 
     def track(self, particle, s_span=None, return_sol=False, ivp_opt={}, backtrack=False):
         if s_span is None and not backtrack:
-             s_span = [0, self.length]
+            s_span = [self.s_start, self.length + self.s_start]
         if backtrack:
             if s_span is None:
-                s_span = [self.length, 0]
+                s_span = [self.length + self.s_start, self.s_start]
             assert s_span[0] > s_span[1], "s_span not compatible with backtracking"
 
         if isinstance(particle.x, np.ndarray) or isinstance(particle.x, list):
             results = []
             out = []
             for i in range(len(particle.x)):
+                # adjust vector potential for each particle
+                ax, ay, _ = self.get_A(particle.x[i], particle.y[i], s_span[0])
+                kin_px = particle.px[i] - particle.ax[i]
+                kin_py = particle.py[i] - particle.ay[i]
+                particle.px[i] = kin_px + ax
+                particle.py[i] = kin_py + ay
                 qp0 = [
                     particle.x[i],
                     particle.y[i],
-                    particle.beta0[i] * particle.zeta[i],
+                    particle.zeta[i] / particle.beta0[i],
                     particle.px[i],
                     particle.py[i],
                     particle.ptau[i],
                 ]
-                sol = self.solve(qp0, s_span=s_span, ivp_opt=ivp_opt)
+                sol = self.solve(qp0, s_span=s_span, beta0=particle.beta0[i], ivp_opt=ivp_opt)
                 s = sol.t
                 x, y, tau, px, py, ptau = sol.y
                 results.append(
                     {
                         "x": x[-1],
                         "y": y[-1],
-                        "zeta": tau[-1] / particle.beta0[i],
+                        "zeta": tau[-1] * particle.beta0[i],
                         "px": px[-1],
                         "py": py[-1],
                         "ptau": ptau[-1],
@@ -119,21 +134,32 @@ class Hamiltonian:
                 particle.s -= self.length
             else:
                 particle.s += self.length
+            # manage vector potential for each particle
+            ax, ay, _ = self.get_A(particle.x, particle.y, s_span[0])
+            # if we want to keep the vector potential in the particle
+            particle.ax = ax
+            particle.ay = ay
+            # we could remove it, but the operation is not symplectic
+            # particle.ax = np.zeros_like(ax)
+            # particle.ay = np.zeros_like(ay)
+            # particle.px -= ax
+            # particle.py -= ay
+
         else:
             qp0 = [
                 particle.x,
                 particle.y,
-                particle.beta0 * particle.zeta,
+                particle.zeta / particle.beta0,
                 particle.px,
                 particle.py,
                 particle.ptau,
             ]
-            sol = self.solve(qp0, s_span=s_span, ivp_opt=ivp_opt)
+            sol = self.solve(qp0, s_span=s_span, beta0=particle.beta0, ivp_opt=ivp_opt)
             s = sol.t
             x, y, tau, px, py, ptau = sol.y
             particle.x = x[-1]
             particle.y = y[-1]
-            particle.zeta = tau[-1] / particle.beta0
+            particle.zeta = tau[-1] * particle.beta0
             particle.px = px[-1]
             particle.py = py[-1]
             particle.ptau = ptau[-1]
@@ -148,14 +174,14 @@ class Hamiltonian:
             return out
 
     def plotsol(
-        self,
-        qp0,
-        s_span=None,
-        ivp_opt=None,
-        figname_zx=None,
-        figname_zxy=None,
-        canvas_zx=None,
-        canvas_zxy=None,
+            self,
+            qp0,
+            s_span=None,
+            ivp_opt=None,
+            figname_zx=None,
+            figname_zxy=None,
+            canvas_zx=None,
+            canvas_zxy=None,
     ):
         sol = self.solve(qp0, s_span, ivp_opt)
         s = sol.t
@@ -188,6 +214,7 @@ class DipoleVectorPotential(FieldExpansion):
     def __init__(self, curv, b1):
         """
         Dipoles without s-dependence, in this case the vector potential is known analytically.
+        Can also be used to study dipoles without any field derivatives!
 
         :param curv (float): Curvature of the reference frame.
         :param b1 (float): Dipole field strength.
@@ -201,7 +228,7 @@ class DipoleVectorPotential(FieldExpansion):
         h = self.curv
         x, y, s = self.x, self.y, self.s
         print(self.b[0])
-        As = -(x + h / 2 * x**2) / (1 + h * x) * self.b[0]
+        As = -(x + h / 2 * x ** 2) / (1 + h * x) * self.b[0]
         print(As)
         if lambdify:
             return [
@@ -260,7 +287,7 @@ class GeneralVectorPotential(FieldExpansion):
 class SympyParticle:
     def __init__(self, beta0=1):
         self.x, self.y, self.tau = sp.symbols("x y tau")
-        self.zeta = sp.symbols("zeta")
+        self.zeta = sp.symbols("zeta")  ## to be checked
         self.s = sp.symbols("s")
         self.px, self.py, self.ptau = sp.symbols("px py ptau")
         self.beta0 = beta0
@@ -276,7 +303,8 @@ class NumpyParticle:
         self.s = s
         self._m = np
         self.npart = 1
-        
+
+
 class MultiParticle:
     def __init__(self, npart, x=0, y=0, tau=0, px=0, py=0, ptau=0, s=0, beta0=1):
         if isinstance(x, int) or isinstance(x, float):
@@ -302,10 +330,10 @@ class MultiParticle:
         assert len(ptau) == npart, "Invalid ptau"
         assert len(s) == npart, "Invalid s"
         assert isinstance(beta0, int) or isinstance(beta0, float), "Invalid beta0"
-        
+
         self.beta0 = beta0
         self.npart = npart
-        
+
         self.x = np.array(x)
         self.y = np.array(y)
         self.tau = np.array(tau)
@@ -314,10 +342,9 @@ class MultiParticle:
         self.ptau = np.array(ptau)
         self.zeta = self.tau * self.beta0
         self.s = np.array(s)
-        
+
         self._m = np
-        
+
     def copy(self):
-        return MultiParticle(self.npart, x=self.x.copy(), y=self.y.copy(), tau=self.tau.copy(), 
+        return MultiParticle(self.npart, x=self.x.copy(), y=self.y.copy(), tau=self.tau.copy(),
                              px=self.px.copy(), py=self.py.copy(), ptau=self.ptau.copy(), s=self.s.copy())
-        

@@ -41,28 +41,29 @@ class SineModel:
 
     # Pretty-printer for the series (kept from your version)
     def series_string(
-        self,
-        *,
-        in_terms_of: str = "s",  # "s" or "z" (only affects variable name)
-        var: Optional[str] = None,
-        coeff_fmt: str = ".6g",
-        k_fmt: Optional[str] = None,
-        tol: float = 0.0,
-        include_cos: bool = True,
-        include_sin: bool = True,
-        sort_by_k: bool = True,
+            self,
+            *,
+            in_terms_of: str = "s",  # ignored (kept for compatibility)
+            var: Optional[str] = None,  # ignored (kept for compatibility)
+            coeff_fmt: str = ".6g",
+            k_fmt: Optional[str] = None,
+            tol: float = 0.0,
+            include_cos: bool = True,
+            include_sin: bool = True,
+            sort_by_k: bool = True,
     ) -> str:
         if not self.is_ready():
             return "0"
+
         cf, kf = coeff_fmt, (k_fmt or coeff_fmt)
-        if var is None:
-            var = "s" if in_terms_of == "s" else "z"
-            arg = var
-        else:
-            raise ValueError('in_terms_of must be "s" or "z"')
+
+        # Always emit in terms of s (we ignore var/in_terms_of)
+        arg = "s"
+
         idx = np.arange(len(self.k))
         if sort_by_k:
             idx = idx[np.argsort(self.k)]
+
         parts = []
         for i in idx:
             A1, A2, kk = float(self.Acos[i]), float(self.Asin[i]), float(self.k[i])
@@ -71,8 +72,10 @@ class SineModel:
                 parts.append(f"{format(A1, cf)}*cos({kk_str}*{arg})")
             if include_sin and abs(A2) > tol:
                 parts.append(f"{format(A2, cf)}*sin({kk_str}*{arg})")
+
         if not parts:
             return "0"
+
         expr = " + ".join(parts).replace("+ -", "- ")
         if expr.startswith("+ "):
             expr = expr[2:]
@@ -119,6 +122,14 @@ class FieldChannel:
 
 class Wiggler:
     """Compact Wiggler fitter (Bx, By, Bz + curvature fits).
+
+    Public API:
+      - fit(), tune_slices_for_zero_integral(), evaluate(), results()
+      - plot_fields(), plot_integral(), plot_raw_fields()
+      - fit_transverse_parabolas(), plot_second_derivatives()
+      - fit_second_derivative_sinusoids(), plot_second_derivative_fit()
+      - curvature_series_string()
+      - to_piecewise_string(), to_piecewise_curvature_string()
 
     Public API:
       - fit(), tune_slices_for_zero_integral(), evaluate(), results()
@@ -777,12 +788,184 @@ class Wiggler:
         plt.title(f"Curvature fit for {field} along {axis} at (X,Y)={self.xy_point}")
         plt.tight_layout(); plt.show()
         if show_series_string:
-            print(model.series_string(in_terms_of="z", **series_kwargs))
+            print(model.series_string(in_terms_of="s", **series_kwargs))
 
     def curvature_series_string(self, field: str = "Bx", axis: str = "x", *, ensure_fit: bool = True, **fmt_kwargs) -> str:
         if ensure_fit and (self.parabola is None or field not in self.curv_sines.get(axis, {})):
             self.fit_second_derivative_sinusoids(axis=axis, fields=(field,))
         return self.curv_sines[axis][field].series_string(**fmt_kwargs)
+
+    # ------------------------------ Export: Piecewise strings ------------------------------
+    def _fmt_num(self, x: float, fmt: str) -> str:
+        return format(float(x), fmt)
+
+    def _poly_to_string(self, poly: Polynomial, var: str = "s", coeff_fmt: str = ".12g", tol: float = 0.0) -> str:
+        coefs = poly.coef  # ascending powers
+        terms = []
+        for p, c in enumerate(coefs):
+            if abs(c) <= tol:
+                continue
+            cs = self._fmt_num(c, coeff_fmt)
+            if p == 0:
+                terms.append(f"{cs}")
+            elif p == 1:
+                terms.append(f"{cs}*{var}")
+            else:
+                terms.append(f"{cs}*{var}**{p}")
+        if not terms:
+            return "0"
+        expr = " + ".join(terms).replace("+ -", "- ")
+        return f"({expr})"
+
+    def to_piecewise_string(
+        self,
+        field: str = "Bx",
+        *,
+        var: str = "s",
+        coeff_fmt: str = ".12g",
+        k_fmt: str | None = None,
+        tol: float = 0.0,
+        include_left: bool = True,
+        include_middle: bool = True,
+        include_right: bool = True,
+    ) -> str:
+        """Export the stitched *fit* for a field as a SymPy-ready Piecewise string.
+
+        Intervals use left-closed / right-open bounds, except the final right slice,
+        which is right-closed. Numbers are formatted with `coeff_fmt`.
+        """
+        self._ensure("data", "borders", "sines")
+        ch = self.fields[field]
+        z = self.z_full
+        i0, i1 = ch.borders_idx  # mid is [i0:i1)
+        pieces: list[tuple[str, str]] = []  # (expr_str, cond_str)
+
+        def cond_interval(L: float, R: float, right_closed: bool = False) -> str:
+            Ls = self._fmt_num(L, coeff_fmt)
+            Rs = self._fmt_num(R, coeff_fmt)
+            op = "<=" if right_closed else "<"
+            return f"(({var} >= {Ls}) & ({var} {op} {Rs}))"
+
+        # Left pieces
+        if include_left and ch.left.polys:
+            starts = ch.left.starts
+            polys = ch.left.polys
+            for idx, (sidx, poly) in enumerate(zip(starts, polys)):
+                L = z[sidx]
+                if idx < len(starts) - 1:
+                    R = z[starts[idx + 1]]
+                    pieces.append((self._poly_to_string(poly, var, coeff_fmt, tol), cond_interval(L, R)))
+                else:
+                    R = z[i0]
+                    pieces.append((self._poly_to_string(poly, var, coeff_fmt, tol), cond_interval(L, R)))
+
+        # Middle sinusoid
+        if include_middle:
+            # right bound: z[i1] if exists (right-open), else z[-1] right-closed
+            Lm = z[i0]
+            if i1 < len(z):
+                Rm = z[i1]
+                mid_cond = cond_interval(Lm, Rm)
+            else:
+                Rm = z[-1]
+                mid_cond = cond_interval(Lm, Rm, right_closed=True)
+            sine_expr = ch.sine.series_string(coeff_fmt=coeff_fmt, k_fmt=k_fmt, tol=tol)
+            pieces.append((f"({sine_expr})", mid_cond))
+
+        # Right pieces
+        if include_right and ch.right.polys:
+            starts = ch.right.starts
+            polys = ch.right.polys
+            for idx, (sidx, poly) in enumerate(zip(starts, polys)):
+                L = z[sidx]
+                if idx < len(starts) - 1:
+                    R = z[starts[idx + 1]]
+                    pieces.append((self._poly_to_string(poly, var, coeff_fmt, tol), cond_interval(L, R)))
+                else:
+                    R = z[-1]
+                    pieces.append((self._poly_to_string(poly, var, coeff_fmt, tol), cond_interval(L, R, right_closed=True)))
+
+        # Assemble Piecewise
+        inner = ", ".join(f"({expr}, {cond})" for expr, cond in pieces)
+        return f"Piecewise({inner})"
+
+    def to_piecewise_curvature_string(
+        self,
+        field: str = "Bx",
+        *,
+        axis: str = "x",           # "x" -> d2/dx2,  "y" -> d2/dy2
+        var: str = "s",
+        coeff_fmt: str = ".12g",
+        k_fmt: str | None = None,
+        tol: float = 0.0,
+        include_left: bool = True,
+        include_middle: bool = True,
+        include_right: bool = True,
+        ensure_fit: bool = True,
+        method: str = "locked",
+    ) -> str:
+        """Export a Piecewise string for the *curvature* stitched fit.
+
+        - Edges: second derivative of the edge polynomials.
+        - Middle: curvature sine model previously fitted for the given axis.
+        """
+        if ensure_fit:
+            if self.parabola is None:
+                self.fit_transverse_parabolas(region="mid")
+            if field not in self.curv_sines.get(axis, {}):
+                self.fit_second_derivative_sinusoids(axis=axis, fields=(field,), method=method)
+
+        ch = self.fields[field]
+        z = self.z_full
+        i0, i1 = ch.borders_idx
+        pieces: list[tuple[str, str]] = []
+
+        def cond_interval(L: float, R: float, right_closed: bool = False) -> str:
+            Ls = self._fmt_num(L, coeff_fmt)
+            Rs = self._fmt_num(R, coeff_fmt)
+            op = "<=" if right_closed else "<"
+            return f"(({var} >= {Ls}) & ({var} {op} {Rs}))"
+
+        # Left pieces: second derivative of polys
+        if include_left and ch.left.polys:
+            starts = ch.left.starts
+            polys = [p.deriv(2) for p in ch.left.polys]
+            for idx, (sidx, poly2) in enumerate(zip(starts, polys)):
+                L = z[sidx]
+                if idx < len(starts) - 1:
+                    R = z[starts[idx + 1]]
+                    pieces.append((self._poly_to_string(poly2, var, coeff_fmt, tol), cond_interval(L, R)))
+                else:
+                    R = z[i0]
+                    pieces.append((self._poly_to_string(poly2, var, coeff_fmt, tol), cond_interval(L, R)))
+
+        # Middle curvature sinusoid
+        if include_middle:
+            Lm = z[i0]
+            if i1 < len(z):
+                Rm = z[i1]
+                mid_cond = cond_interval(Lm, Rm)
+            else:
+                Rm = z[-1]
+                mid_cond = cond_interval(Lm, Rm, right_closed=True)
+            sine_expr = self.curv_sines[axis][field].series_string(coeff_fmt=coeff_fmt, k_fmt=k_fmt, tol=tol)
+            pieces.append((f"({sine_expr})", mid_cond))
+
+        # Right pieces: second derivative of polys
+        if include_right and ch.right.polys:
+            starts = ch.right.starts
+            polys = [p.deriv(2) for p in ch.right.polys]
+            for idx, (sidx, poly2) in enumerate(zip(starts, polys)):
+                L = z[sidx]
+                if idx < len(starts) - 1:
+                    R = z[starts[idx + 1]]
+                    pieces.append((self._poly_to_string(poly2, var, coeff_fmt, tol), cond_interval(L, R)))
+                else:
+                    R = z[-1]
+                    pieces.append((self._poly_to_string(poly2, var, coeff_fmt, tol), cond_interval(L, R, right_closed=True)))
+
+        inner = ", ".join(f"({expr}, {cond})" for expr, cond in pieces)
+        return f"Piecewise({inner})"
 
     # ------------------------------ Tuning ------------------------------
     def tune_slices_for_zero_integral(self, field="all", left_candidates=None, right_candidates=None, tradeoff_mse=0.0, verbose=None):

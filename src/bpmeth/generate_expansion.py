@@ -22,16 +22,54 @@ class FieldExpansion:
         self.bs = eval(bs, sp.__dict__, {"s": self.s}) if isinstance(bs, str) else bs.subs(sp.Symbol("s"), self.s)
         self.hs = eval(hs, sp.__dict__, {"s": self.s}) if isinstance(hs, str) else hs.subs(sp.Symbol("s"), self.s)
         self.nphi = nphi
+        self._B_expr = None  # cached (Bx, By, Bs) sympy expressions with coefficients substituted
+        self._B_funcs = None  # cached (Bxfun, Byfun, Bsfun) numpy-callable lambdas
 
-        
         self.afun = [sp.Function(f"a{i+1}")(self.s) for i, an in enumerate(a)]
         self.bfun = [sp.Function(f"b{i+1}")(self.s) for i, bn in enumerate(b)]
         self.bsfun = sp.Function("bs")(self.s) if self.bs!=0 else sp.Integer(0)
 
+    @staticmethod
+    def _pw_diff(expr, s, n):
+        import sympy as sp
+        if n == 0:
+            return expr
+        if isinstance(expr, sp.Piecewise):
+            parts = [(sp.diff(e, s, n), c) for (e, c) in expr.args]
+            return sp.Piecewise(*parts, evaluate=False)
+        return sp.diff(expr, s, n)
 
-    def subs(self, func, coord_subs={}):
-        return func.subs({**{sym.subs(coord_subs):val for sym, val in zip(self.afun,self.a)}, **{sym.subs(coord_subs):val for sym, val in zip(self.bfun,self.b)}, self.bsfun.subs(coord_subs):self.bs}).doit()
+    def subs(self, func, coord_subs=None):
+        import sympy as sp
+        if coord_subs is None:
+            coord_subs = {}
+        s = self.s
 
+        # 1) Build the base mapping (sym -> expr), sympifying all values
+        base_map = {}
+        for sym, val in zip(self.afun, self.a):
+            base_map[sym.subs(coord_subs)] = sp.sympify(val).subs(coord_subs)
+        for sym, val in zip(self.bfun, self.b):
+            base_map[sym.subs(coord_subs)] = sp.sympify(val).subs(coord_subs)
+        # Always map bs(s) as well (sympify handles int/float/expr uniformly)
+        base_map[self.bsfun.subs(coord_subs)] = sp.sympify(self.bs).subs(coord_subs)
+
+        # 2) Start with 0th-order replacements
+        mapping = dict(base_map)
+
+        # 3) Add derivative replacements that actually appear in func
+        for d in func.atoms(sp.Derivative):
+            vars_ = d.variables
+            if not vars_:
+                continue
+            if all(v == s for v in vars_):
+                base = d.expr.subs(coord_subs)
+                if base in base_map:
+                    order = len(vars_)
+                    mapping[d] = self._pw_diff(base_map[base], s, order)
+
+        # 4) Structural replacement, no .doit() (avoids Piecewise blow-up)
+        return func.xreplace(mapping)
 
     def get_phi(self, tolerance=1e-4, apperture=0.05, subs=True):
         """
@@ -75,30 +113,36 @@ class FieldExpansion:
                 warnings.warn("The laplacian could not be evaluated, are you doing symbolic calculations?")
 
         return phi
-        
-    
+
     def get_Bfield(self, lambdify=True, subs=True):
-        x = self.x
-        y = self.y
-        s = self.s
-        phi = self.get_phi(subs=False)
+        x, y, s = self.x, self.y, self.s
         hs = self.hs
-        Bx, By, Bs = phi.diff(x), phi.diff(y), 1/(1+hs*x)*phi.diff(s)
 
-        if subs or lambdify:
-            Bx = self.subs(Bx)
-            By = self.subs(By)
-            Bs = self.subs(Bs)
+        # Build once per instance
+        if getattr(self, "_B_expr", None) is None:
+            phi = self.get_phi(subs=False)  # keep coefficients symbolic here
+            Bx = phi.diff(x)
+            By = phi.diff(y)
+            Bs = 1 / (1 + hs * x) * phi.diff(s)
 
-        if lambdify:
-            return (
-                np.vectorize(sp.lambdify([x, y, s], Bx, "numpy")),
-                np.vectorize(sp.lambdify([x, y, s], By, "numpy")),
-                np.vectorize(sp.lambdify([x, y, s], Bs, "numpy")),
-            )
+            if subs or lambdify:
+                Bx = self.subs(Bx)  # now cheap; no .doit()
+                By = self.subs(By)
+                Bs = self.subs(Bs)
 
-        return Bx, By, Bs
+            self._B_expr = (Bx, By, Bs)
 
+        if not lambdify:
+            return self._B_expr
+
+        if getattr(self, "_B_funcs", None) is None:
+            Bx, By, Bs = self._B_expr
+            Bxf = sp.lambdify((x, y, s), Bx, "numpy")
+            Byf = sp.lambdify((x, y, s), By, "numpy")
+            Bsf = sp.lambdify((x, y, s), Bs, "numpy")
+            self._B_funcs = (Bxf, Byf, Bsf)
+
+        return self._B_funcs
 
     def get_A(self, lambdify=False, subs=True):
         x, y, s = self.x, self.y, self.s
@@ -281,7 +325,7 @@ class FieldExpansion:
 
         if ax is None:
             fig, ax = plt.subplots()
-        plt.imshow(bmagn_color, extent=(zmin, zmax, ymin, ymax), origin='lower', vmin=bmin, vmax=bmax)
+        plt.imshow(bmagn_color, extent=(zmin, zmax, ymin, ymax), origin='lower', vmin=bmin, vmax=bmax, aspect='auto')
         plt.colorbar()
         skip = 4
         plt.quiver(Z[::skip, ::skip], Y[::skip, ::skip], Bs[::skip, ::skip]/bmagn[::skip, ::skip], 
@@ -317,7 +361,7 @@ class FieldExpansion:
 
         if ax is None:
             fig, ax = plt.subplots()
-        plt.imshow(bmagn_color, extent=(zmin, zmax, xmin, xmax), origin='lower', vmin=bmin, vmax=bmax)
+        plt.imshow(bmagn_color, extent=(zmin, zmax, xmin, xmax), origin='lower', vmin=bmin, vmax=bmax, aspect='auto')
         plt.colorbar()
         skip = 4
         plt.quiver(Z[::skip, ::skip], X[::skip, ::skip], Bs[::skip, ::skip]/bmagn[::skip, ::skip], 
@@ -343,7 +387,7 @@ class FieldExpansion:
 
         if ax is None:
             fig, ax = plt.subplots()
-        plt.imshow(By, extent=(zmin, zmax, xmin, xmax), origin='lower', vmin=bmin, vmax=bmax)
+        plt.imshow(By, extent=(zmin, zmax, xmin, xmax), origin='lower', vmin=bmin, vmax=bmax, aspect='auto')
         plt.colorbar()
         
         plt.xlabel("s")
