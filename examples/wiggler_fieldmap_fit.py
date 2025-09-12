@@ -75,15 +75,15 @@ by_valleys = by_valleys[0][np.logical_and(by_valleys[0] > 99, by_valleys[0] < 21
 # The region between -1100 and xborderleft goes from the start until the first peak. We fit a series of polynomials.
 # The region between xborderleft and xborderright encompasses the sinusoidal region in the middle. We fit a sinusoid.
 # The region between xborderright adn 1100 goes from the last peak until the end. We fit a series of polynomials.
-xborderleft  = bx_valleys[1]      # z = -938
-xborderright = bx_valleys[-2]     # z =  952
+xborderleft  = bx_peaks[0]      # z = -938
+xborderright = bx_peaks[-1]     # z =  952
 
 # Splits the magnetic field into five regions. The regions are decided based on the peaks and valleys of B_y.
 # The region between -1100 and yborderleft goes from the start until the first peak. We fit a series of polynomials.
 # The region between yborderleft and yborderright encompasses the sinusoidal region in the middle. We fit a sinusoid.
 # The region between yborderright adn 1100 goes from the last peak until the end. We fit a series of polynomials.
-yborderleft  = by_peaks[2]    # z = -929
-yborderright = by_peaks[-3]   # z =  871
+yborderleft  = by_valleys[0]    # z = -929
+yborderright = by_valleys[-1]   # z =  871
 
 # Assign the z-arrays for each region.
 zx_regionleft  = z_values[:xborderleft].copy()
@@ -105,6 +105,25 @@ by_regionleft  = by_values[:yborderleft].copy()
 by_regionsines = by_values[yborderleft:yborderright].copy()
 by_regionright = by_values[yborderright:].copy()
 
+print(zx_regionleft)
+print(bx_regionleft)
+plt.plot(zx_regionleft, bx_regionleft)
+plt.show()
+
+print(zx_regionright)
+print(bx_regionright)
+plt.plot(zx_regionright, bx_regionright)
+plt.show()
+
+print(zy_regionleft)
+print(by_regionleft)
+plt.plot(zy_regionleft, by_regionleft)
+plt.show()
+
+print(zy_regionright)
+print(by_regionright)
+plt.plot(zy_regionright, by_regionright)
+plt.show()
 
 ########################################################################################################################
 # SINUSOID FITTING
@@ -485,12 +504,6 @@ bt_polyfit = np.sqrt(bx_polyfit**2 + by_polyfit**2)
 # DEFINE FIELD AS FUNCTIONS
 ########################################################################################################################
 
-def b_field_func(z, *params):
-    # params = [borders, left_poly, right_poly, sinusoids]
-    borders = params[0]
-    left_poly = params[1]
-    right_poly = params[2]
-    sinusoids = params[3]
 
 ########################################################################################################################
 # MERGE IT ALL TOGETHER
@@ -508,7 +521,6 @@ bx_trapz = sc.integrate.cumulative_trapezoid(bx_values,  dx=dz)
 by_trapz = sc.integrate.cumulative_trapezoid(by_values,  dx=dz)
 bx_fit_trapz = sc.integrate.cumulative_trapezoid(bx_fit, dx=dz)
 by_fit_trapz = sc.integrate.cumulative_trapezoid(by_fit, dx=dz)
-
 
 ########################################################################################################################
 # PLOTS

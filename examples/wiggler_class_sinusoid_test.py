@@ -153,11 +153,6 @@ Bx10 = Test_Wiggler.fields["Bx"].data[leftidx:rightidx]
 By10 = Test_Wiggler.fields["By"].data[leftidx:rightidx]
 Bz10 = Test_Wiggler.fields["Bz"].data[leftidx:rightidx]
 
-kx1 = Test_Wiggler.fields["Bx"].sine.k[0]
-ky1 = Test_Wiggler.fields["By"].sine.k[0]
-lambdax1 = 2 * np.pi / kx1
-lambday1 = 2 * np.pi / ky1
-
 
 ax1.plot(Z, Bx10, label=f"Bx Data  ({xoffset}, {yoffset})")
 ax1.plot(Z, Bxfun(dz*xoffset, dz*yoffset, Z), label=f"Bx bpmeth  ({xoffset}, {yoffset})", linestyle='dashed')

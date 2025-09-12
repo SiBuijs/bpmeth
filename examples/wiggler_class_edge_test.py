@@ -32,10 +32,6 @@ Test_Wiggler = Wiggler(file_path='example_data/knot_map_test.txt',
                        dx=dz,
                        dy=dz,
                        dz=dz,
-                       x_left_slices=23,
-                       x_right_slices=21,
-                       y_left_slices=20,
-                       y_right_slices=30,
                        n_modes_x=4,
                        n_modes_y=4,
                        n_modes_z=1)
@@ -52,20 +48,11 @@ Test_Wiggler.fit(
     center_xy=(0,0),                # transverse center to evaluate parabolas at
 )
 
-Test_Wiggler.tune_slices_for_zero_integral(field="both", tradeoff_mse=0.0,
-                                           left_candidates=range(8, 24),
-                                           right_candidates=range(8, 24),
-                                           verbose=True)
+Test_Wiggler.plot_fields()
+Test_Wiggler.plot_integral()
 
-# Field piecewise for Bx:
-expr_bx = Test_Wiggler.to_piecewise_string("Bx", coeff_fmt=".12g")
-expr_by = Test_Wiggler.to_piecewise_string("By", coeff_fmt=".12g")
-expr_bz = Test_Wiggler.to_piecewise_string("Bz", coeff_fmt=".12g")
-print(expr_bx)
+prrr
 
-# Curvature piecewise for d²Bx/dx²:
-curv_bx = Test_Wiggler.to_piecewise_curvature_string("Bx", axis="x", coeff_fmt=".12g")
-curv_by = Test_Wiggler.to_piecewise_curvature_string("By", axis="y", coeff_fmt=".12g")
 print(curv_bx)
 
 a1 = expr_bx

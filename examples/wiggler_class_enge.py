@@ -16,8 +16,8 @@ from scipy.optimize import curve_fit
 from numpy.polynomial import Polynomial
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, Tuple, Optional
+from bpmeth import poly_fit
 import matplotlib.pyplot as plt
-from scipy.special import expit
 
 
 # ========================== Small helper classes ==========================
@@ -81,122 +81,31 @@ class SineModel:
             expr = expr[2:]
         return expr
 
+
 @dataclass
-class EngeModel:
-    """
-    Minimal container + evaluators for a single Enge edge:
-        f(s) = A / (1 + exp(P(s - x0)))
+class PiecewisePoly:
+    starts: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=int))
+    polys: list = field(default_factory=list)  # list[Polynomial]
 
-    - A : amplitude (float)
-    - P : numpy.polynomial.Polynomial (ascending powers), defined in the shifted coordinate u = s - x0
-    - x0: shift (float), typically set to the mid/edge boundary to keep coefficients well-scaled.
+    def set_pieces(self, starts: Iterable[int], polys: Iterable[Polynomial]) -> None:
+        starts = np.asarray(list(starts), dtype=int)
+        order = np.argsort(starts)
+        self.starts = starts[order]
+        polys = list(polys)
+        self.polys = [polys[i] for i in order]
 
-    This class mirrors SineModel in spirit: it *stores* parameters and provides `eval()`;
-    the actual fitting is handled elsewhere.
-    """
-    A: float | None = None
-    P: Polynomial | None = None
-    x0: float = 0.0
-    baseline: float = 0.0
+    def eval(self, z: np.ndarray, z_full: np.ndarray) -> np.ndarray:
+        if not self.polys:
+            return np.zeros_like(z, dtype=float)
+        i = np.searchsorted(z_full, z, side="left")
+        pid = np.searchsorted(self.starts, i, side="right") - 1
+        pid = np.clip(pid, 0, len(self.polys) - 1)
+        out = np.empty_like(z, dtype=float)
+        for p in np.unique(pid):
+            mask = (pid == p)
+            out[mask] = self.polys[p](z[mask])
+        return out
 
-    def is_ready(self) -> bool:
-        return (self.A is not None) and (self.P is not None)
-
-    def eval(self, s: np.ndarray) -> np.ndarray:
-        if not self.is_ready():
-            return np.zeros_like(s, dtype=float)
-        u = s - self.x0
-        return self.baseline + self.A * expit(-self.P(u))
-
-    def eval_derivative(self, s: np.ndarray) -> np.ndarray:
-        if not self.is_ready():
-            return np.zeros_like(s, dtype=float)
-        u   = s - self.x0
-        Pu  = self.P(u)
-        P1u = self.P.deriv(1)(u)
-        t   = expit(-Pu)
-        return -self.A * P1u * t * (1.0 - t)
-
-    def eval_second_derivative(self, s: np.ndarray) -> np.ndarray:
-        if not self.is_ready():
-            return np.zeros_like(s, dtype=float)
-        u    = s - self.x0
-        Pu   = self.P(u)
-        P1u  = self.P.deriv(1)(u)
-        P2u  = self.P.deriv(2)(u)
-        t    = expit(-Pu)
-        return -self.A * t * (1.0 - t) * (P2u + (2.0 * t - 1.0) * (P1u ** 2))
-
-    # optional: string helpers for exports
-    def _poly_to_string(self, poly: Polynomial, var: str = "s", coeff_fmt: str = ".12g", tol: float = 0.0) -> str:
-        coefs = poly.coef
-        parts = []
-        for p, c in enumerate(coefs):
-            if abs(c) <= tol:
-                continue
-            if p == 0: parts.append(f"{c:{coeff_fmt}}")
-            elif p == 1: parts.append(f"{c:{coeff_fmt}}*{var}")
-            else: parts.append(f"{c:{coeff_fmt}}*{var}**{p}")
-        if not parts: return "0"
-        expr = " + ".join(parts).replace("+ -", "- ")
-        return expr[2:] if expr.startswith("+ ") else expr
-
-    # Add inside EngeModel
-
-    def _coeffs_u_to_s_ascending(self) -> np.ndarray:
-        """
-        Convert P(u)=sum c_i u^i with u=s-x0 into P(s)=sum a_j s^j.
-        Returns a (ascending) array [a0, a1, ..., an].
-        """
-        if self.P is None:
-            return np.array([0.0])
-        c = np.array(self.P.coef, dtype=float)  # ascending in u
-        n = len(c) - 1
-        a = np.zeros(n + 1, dtype=float)  # ascending in s
-        if n >= 0:
-            # a_j = sum_{i=j..n} c_i * C(i,j) * (-x0)^(i-j)
-            from math import comb
-            for i in range(n + 1):
-                for j in range(i + 1):
-                    a[j] += c[i] * comb(i, j) * ((-self.x0) ** (i - j))
-        return a
-
-    def sympy_params_for_spEnge(self):
-        """
-        Returns (A, coeffs_desc) where coeffs_desc is a list of polynomial
-        coefficients in s for SymPy Poly(..., s), in DESCENDING power order.
-        """
-        if not self.is_ready():
-            return 0.0, [0.0]
-        a_asc = self._coeffs_u_to_s_ascending()
-        coeffs_desc = list(a_asc[::-1])  # descending for SymPy
-        return float(self.A), coeffs_desc
-
-    def expr_string(self, var: str = "s", coeff_fmt: str = ".12g", tol: float = 0.0, *, style: str = "direct") -> str:
-        """
-        style="direct":  returns    A/(1+exp(P(var - x0)))
-        style="bpmeth":  returns    spEnge(var, A, *coeffs_in_s_desc)
-        """
-        if not self.is_ready():
-            return "0"
-        if style == "bpmeth":
-            A, coeffs_desc = self.sympy_params_for_spEnge()
-            coeffs_str = ", ".join(f"{c:{coeff_fmt}}" for c in coeffs_desc)
-            return f"spEnge({var}, {A:{coeff_fmt}}, {coeffs_str})"
-        # default: direct form with shift shown explicitly
-        u = f"({var} - {self.x0:{coeff_fmt}})"
-        poly_str = self._poly_to_string(self.P, var=u, coeff_fmt=coeff_fmt, tol=tol)
-        return f"({self.A:{coeff_fmt}})/(1 + exp({poly_str}))"
-
-    def curvature_expr_string(self, var: str = "s", coeff_fmt: str = ".12g", tol: float = 0.0) -> str:
-        if not self.is_ready():
-            return "0"
-        u = f"({var} - {self.x0:{coeff_fmt}})"
-        P  = self._poly_to_string(self.P, var=u, coeff_fmt=coeff_fmt, tol=tol)
-        P1 = self._poly_to_string(self.P.deriv(1), var=u, coeff_fmt=coeff_fmt, tol=tol)
-        P2 = self._poly_to_string(self.P.deriv(2), var=u, coeff_fmt=coeff_fmt, tol=tol)
-        return (f"-({self.A:{coeff_fmt}})*exp({P})*((({P1})**2 + ({P2})) + exp({P})*(({P2}) - ({P1})**2))"
-                f"/(1 + exp({P}))**3")
 
 @dataclass
 class FieldChannel:
@@ -205,8 +114,8 @@ class FieldChannel:
     borders_idx: Optional[Tuple[int, int]] = None  # [i0:i1)
     borders_z: Optional[Tuple[float, float]] = None
     sine: SineModel = field(default_factory=SineModel)
-    left: EngeModel = field(default_factory=EngeModel)
-    right: EngeModel = field(default_factory=EngeModel)
+    left: PiecewisePoly = field(default_factory=PiecewisePoly)
+    right: PiecewisePoly = field(default_factory=PiecewisePoly)
 
 
 # ================================ Main class ================================
@@ -215,6 +124,7 @@ class Wiggler:
     """Compact Wiggler fitter (Bx, By, Bz + curvature fits).
 
     Public API:
+      - fit(), tune_slices_for_zero_integral(), evaluate(), results()
       - plot_fields(), plot_integral(), plot_raw_fields()
       - fit_transverse_parabolas(), plot_second_derivatives()
       - fit_second_derivative_sinusoids(), plot_second_derivative_fit()
@@ -222,6 +132,7 @@ class Wiggler:
       - to_piecewise_string(), to_piecewise_curvature_string()
 
     Public API:
+      - fit(), tune_slices_for_zero_integral(), evaluate(), results()
       - plot_fields(), plot_integral(), plot_raw_fields()
       - fit_transverse_parabolas(), plot_second_derivatives()
       - fit_second_derivative_sinusoids(), plot_second_derivative_fit()
@@ -237,21 +148,32 @@ class Wiggler:
         dx=0.001,
         dy=0.001,
         dz=0.001,
-        enge_degree: int = 15,
+        degree=3,
         peak_window=(100, 2100),
         n_modes_x=None,
         n_modes_y=None,
         n_modes_z=None,
+        x_left_slices=10,
+        x_right_slices=10,
+        y_left_slices=10,
+        y_right_slices=10,
+        z_left_slices=10,
+        z_right_slices=10,
         verbose=False,
     ):
         self.file_path = file_path
         self.xy_point = xy_point
         self.dx, self.dy, self.dz = dx, dy, dz
-        self.enge_degree = enge_degree
+        self.degree = degree
         self.peak_window = peak_window
         self.verbose = verbose
 
         self.n_modes = {"Bx": n_modes_x, "By": n_modes_y, "Bz": n_modes_z}
+        self.slice_counts = {
+            "Bx": {"left": x_left_slices, "right": x_right_slices},
+            "By": {"left": y_left_slices, "right": y_right_slices},
+            "Bz": {"left": z_left_slices, "right": z_right_slices},
+        }
 
         self.df: Optional[pd.DataFrame] = None
         self.z_full: Optional[np.ndarray] = None
@@ -285,21 +207,26 @@ class Wiggler:
 
     # ------------------------------ Orchestrator ------------------------------
     def fit(
-            self,
-            *,
-            curvature: bool = False,
-            curvature_axes: tuple = ("x", "y"),
-            curvature_fields: tuple = ("Bx", "By"),
-            n_modes: Optional[dict] = None,
-            reuse_borders: bool = True,
-            center_xy: Tuple[int, int] = (0, 0),
-            # NEW (optional) Enge knobs:
-            enge_deg: int | None = None,  # default: self.degree
-            enge_use_optimizer: bool = True,  # refine A with bounded 1D search
-            enge_boundary_weight: float = 10.0,  # soft boundary match penalty
+        self,
+        *,
+        curvature: bool = False,
+        curvature_axes: tuple = ("x", "y"),
+        curvature_fields: tuple = ("Bx", "By"),
+        n_modes: Optional[dict] = None,
+        reuse_borders: bool = True,
+        center_xy: Tuple[int, int] = (0, 0),
     ) -> None:
+        """Run the full field fit. If `curvature` is True, also fit 3‑point parabolas
+        at `center_xy` (default (0,0)) in the mid region and sine-fit their second derivatives.
+
+        Notes
+        -----
+        - If `n_modes` is provided, it now applies to **both** the base field fits (Bx, By, Bz)
+          and the curvature fits. Keys should be any of {"Bx","By","Bz"}.
+        """
         self._ensure("data")
 
+        # Optional: apply per-field mode caps to base fits as well
         if n_modes is not None:
             for comp in self.COMPONENTS:
                 val = n_modes.get(comp) if isinstance(n_modes, dict) else None
@@ -308,19 +235,16 @@ class Wiggler:
 
         self._find_borders()
         self._fit_sinusoids()
-        # pass Enge options down to the edge fitter
         self._fit_edges()
         self._merge_sections()
         self._compute_primitives()
-
         if curvature:
+            # Compute parabolas at requested center and fit curvatures along chosen axes
             self.fit_transverse_parabolas(center_xy=center_xy, region="mid")
             if "x" in curvature_axes:
-                self.fit_second_derivative_sinusoids(axis="x", fields=curvature_fields, n_modes=n_modes,
-                                                     reuse_borders=reuse_borders)
+                self.fit_second_derivative_sinusoids(axis="x", fields=curvature_fields, n_modes=n_modes, reuse_borders=reuse_borders)
             if "y" in curvature_axes:
-                self.fit_second_derivative_sinusoids(axis="y", fields=curvature_fields, n_modes=n_modes,
-                                                     reuse_borders=reuse_borders)
+                self.fit_second_derivative_sinusoids(axis="y", fields=curvature_fields, n_modes=n_modes, reuse_borders=reuse_borders)
 
     # ------------------------------ I/O ------------------------------
     def _parse_to_dataframe(self) -> None:
@@ -337,48 +261,58 @@ class Wiggler:
         for c in self.COMPONENTS:
             self.fields[c].data = subset[c].to_numpy()
 
+    # ------------------------------ Borders ------------------------------
     def _find_borders(self) -> None:
         z = self.z_full
         k0, k1 = self.peak_window
-
         def _filter(ix):
             return ix[(ix >= k0) & (ix <= k1)]
 
-        def _extrema_indices(y: np.ndarray) -> np.ndarray:
-            # merge peaks & valleys, filter to peak_window, sort, unique
-            p = _filter(find_peaks(y)[0])
-            v = _filter(find_peaks(-y)[0])
-            if p.size + v.size == 0:
-                return np.array([], dtype=int)
-            return np.sort(np.unique(np.concatenate([p, v])))
-
         borders = {}
-        n = len(z)
+        # Bx via valleys
+        bx = self.fields["Bx"].data
+        bx_val = _filter(find_peaks(-bx)[0])
+        if len(bx_val) >= 4:
+            i0x, i1x = int(bx_val[1]), int(bx_val[-2])
+        elif len(bx_val) >= 2:
+            i0x, i1x = int(bx_val[0]), int(bx_val[-1])
+        else:
+            i0x, i1x = max(1, k0), min(k1, len(z) - 1)
+        i0x = max(1, min(i0x, len(z) - 2))
+        i1x = max(i0x + 2, min(i1x, len(z) - 1))
+        borders["Bx"] = (i0x, i1x)
 
-        for comp in self.COMPONENTS:
-            y = self.fields[comp].data
-            ex = _extrema_indices(y)
+        # By via peaks/valleys with fallback to Bx
+        by = self.fields["By"].data
+        by_pea = _filter(find_peaks(by)[0])
+        by_val = _filter(find_peaks(-by)[0])
+        if len(by_pea) >= 2 and len(by_val) >= 2:
+            i0y, i1y = int(by_pea[1]), int(by_val[-2])
+            if i0y >= i1y:
+                i0y, i1y = borders["Bx"]
+        else:
+            i0y, i1y = borders["Bx"]
+        i0y = max(1, min(i0y, len(z) - 2))
+        i1y = max(i0y + 2, min(i1y, len(z) - 1))
+        borders["By"] = (i0y, i1y)
 
-            if len(ex) >= 4:
-                i0, i1 = int(ex[1]), int(ex[-2])  # 2nd and 2nd-last extrema
-            elif len(ex) >= 2:
-                i0, i1 = int(ex[0]), int(ex[-1])  # fall back: first and last
-            elif len(ex) == 1:
-                i0, i1 = int(ex[0]), min(k1, n - 1)  # single extremum: pair with window end
-            else:
-                i0, i1 = max(1, k0), min(k1, n - 1)  # no extrema: use window
+        # Bz mirrors Bx with fallback to By
+        bz = self.fields["Bz"].data
+        bz_val = _filter(find_peaks(-bz)[0])
+        if len(bz_val) >= 4:
+            i0z, i1z = int(bz_val[1]), int(bz_val[-2])
+        elif len(bz_val) >= 2:
+            i0z, i1z = int(bz_val[0]), int(bz_val[-1])
+        else:
+            i0z, i1z = borders["By"]
+        i0z = max(1, min(i0z, len(z) - 2))
+        i1z = max(i0z + 2, min(i1z, len(z) - 1))
+        borders["Bz"] = (i0z, i1z)
 
-            # clamp to keep a valid half-open mid region [i0:i1)
-            i0 = max(1, min(i0, n - 2))
-            i1 = max(i0 + 2, min(i1, n - 1))
-
-            borders[comp] = (i0, i1)
-
-        # store both index and z-space borders; mid region is [i0:i1)
-        for comp in self.COMPONENTS:
-            i0, i1 = borders[comp]
-            self.fields[comp].borders_idx = (i0, i1)
-            self.fields[comp].borders_z = (float(z[i0]), float(z[i1 - 1]))
+        for c in self.COMPONENTS:
+            i0, i1 = borders[c]
+            self.fields[c].borders_idx = (i0, i1)
+            self.fields[c].borders_z = (z[i0], z[i1 - 1])
 
     # ------------------------------ Sinusoid fitting ------------------------------
     @staticmethod
@@ -444,112 +378,6 @@ class Wiggler:
             model = self._fit_sine_to_segment(self.fields[c].data[i0:i1], z[i0:i1], self.n_modes[c])
             self.fields[c].sine = model
 
-    def _fit_enge_scan_opt(
-            self,
-            x: np.ndarray,
-            y: np.ndarray,
-            *,
-            deg: int | None = None,
-            x0: float | None = None,
-            A_candidates: np.ndarray | None = None,
-            optim_bounds: tuple[float, float] | None = None,
-            use_optimizer: bool = True,
-    ) -> tuple[EngeModel, np.ndarray, dict]:
-        """
-        Fit Enge f(s) = A / (1 + exp(P(s - x0))) by:
-          (1) scanning A over A_candidates,
-          (2) optional 1D bounded optimization of A,
-          (3) refitting P at the best A and returning the model and y_fit.
-        Returns: (enge_model, y_fit, info)
-        """
-        x = np.asarray(x, float)
-        y = np.asarray(y, float)
-        if deg is None:
-            deg = int(self.enge_degree)
-
-        # choose a stable center
-        if x0 is None:
-            x0 = float(np.mean(x)) if x.size else 0.0
-
-        # quick exit if y is all ~0
-        ymax = float(np.max(np.abs(y))) if np.any(y) else 0.0
-        if ymax == 0.0:
-            enge = EngeModel(A=0.0, P=Polynomial([0.0]), x0=x0)
-            return enge, np.zeros_like(y), {"A": 0.0, "deg_used": 0, "mse": 0.0}
-
-        # sign of A from the edge’s average sign (fallback +1)
-        sgn = float(np.sign(np.mean(y))) or 1.0
-
-        # candidate grid for A (magnitudes) if not provided
-        if A_candidates is None:
-            lo = max(1.05 * ymax, 1e-6)
-            hi = max(10.0 * ymax, lo * 1.0001)
-            mags = np.geomspace(lo, hi, num=32)
-            A_candidates = sgn * mags
-
-        # helper: fit P for a given A in u = x - x0
-        def _fit_P_for_A(A: float):
-            mask = (y != 0.0) & (np.sign(y) == np.sign(A)) & (np.abs(y) < np.abs(A))
-            if mask.sum() < deg + 1:
-                return None, None
-            u = x[mask] - x0
-            t = np.log(A / y[mask] - 1.0)
-            deg_use = min(deg, max(0, len(u) - 1))
-            if deg_use < 0:
-                return None, None
-            P_u = Polynomial.fit(u, t, deg=deg_use).convert()
-            return P_u, deg_use
-
-        # error for A (MSE over full region)
-        def _mse_for_A(A: float) -> float:
-            P_u, _deg_used = _fit_P_for_A(A)
-            if P_u is None:
-                return np.inf
-            y_hat = A / (1.0 + np.exp(P_u(x - x0)))
-            return float(np.mean((y_hat - y) ** 2))
-
-        # (1) manual scan
-        errs = []
-        for Ac in A_candidates:
-            errs.append(_mse_for_A(Ac))
-        i_best_scan = int(np.argmin(errs))
-        A_scan = float(A_candidates[i_best_scan])
-        mse_scan = float(errs[i_best_scan])
-
-        # (2) optional bounded optimizer (refine A)
-        A_opt = A_scan
-        if use_optimizer:
-            # bounds default: the span of candidates (ordered low<high)
-            if optim_bounds is None:
-                lo, hi = float(np.min(A_candidates)), float(np.max(A_candidates))
-                optim_bounds = (min(lo, hi), max(lo, hi))
-            res = minimize_scalar(_mse_for_A, bounds=optim_bounds, method="bounded")
-            if res.success and np.isfinite(res.fun):
-                A_opt = float(res.x)
-
-        # (3) final P and y_fit at A_opt
-        P_final, deg_used = _fit_P_for_A(A_opt)
-        if P_final is None:
-            # fallback to scan result
-            A_opt = A_scan
-            P_final, deg_used = _fit_P_for_A(A_opt)
-        if P_final is None:
-            enge = EngeModel(A=0.0, P=Polynomial([0.0]), x0=x0)
-            return enge, np.zeros_like(y), {"A": 0.0, "deg_used": 0, "mse": float(np.mean(y ** 2))}
-
-        y_fit = A_opt / (1.0 + np.exp(P_final(x - x0)))
-        mse = float(np.mean((y_fit - y) ** 2))
-        enge = EngeModel(A=A_opt, P=P_final, x0=x0)
-
-        info = {
-            "A_scan": A_scan,
-            "mse_scan": mse_scan,
-            "A": A_opt,
-            "deg_used": int(deg_used),
-            "mse": mse,
-        }
-        return enge, y_fit, info
-
     # ------------------------------ Edge polynomials ------------------------------
     def _boundary_from_sine(self, z_mid: np.ndarray, sine: SineModel) -> np.ndarray:
         xL, xR = z_mid[0] - self.dz, z_mid[-1] + self.dz
@@ -568,199 +396,67 @@ class Wiggler:
         dp, ddp = poly.deriv(), poly.deriv(2)
         return np.array([poly(xL), poly(xR), dp(xL), dp(xR), ddp(xL), ddp(xR)], dtype=float)
 
-    def _compose_poly_linear(self, P: Polynomial, *, a: float, b: float) -> Polynomial:
-        """
-        Return P(a*u + b) as a Polynomial in u. Works on NumPy versions without Polynomial.compose().
-        """
-        T = Polynomial([b, a])  # T(u) = b + a*u
-        out = Polynomial([0.0])  # accumulator
-        # Horner in descending order: ((((c_n)*T + c_{n-1})*T + ...) + c_0)
-        for c in P.coef[::-1]:
-            out = out * T + c
-        return out
+    @staticmethod
+    def _balanced_slices(n: int, num_regions: int) -> list[slice]:
+        base, rem = n // num_regions, n % num_regions
+        slices, start = [], 0
+        for i in range(num_regions):
+            end = start + base + (1 if i < rem else 0)
+            if end > start:
+                slices.append(slice(start, end))
+            start = end
+        return slices
 
-    def _fit_enge_side(
-            self,
-            z_region,
-            b_region,
-            z_mid,
-            sine,
-            *,
-            side: str,  # "left" or "right"
-            deg: int | None = None,
-            boundary_weight: float = 10.0,
-            y_eps: float = 0.05,  # used only when we must enable a baseline
-    ):
-        """
-        Fit one Enge edge on one side:
-            f(s) = baseline + A * σ( -P( (s - x0) ) )
-        with σ = logistic. Returns (EngeModel, y_fit_on_this_region).
-        """
-        import numpy as np
-        from numpy.polynomial import Polynomial
-        from scipy.special import expit
-
-        z_region = np.asarray(z_region, float)
-        b_region = np.asarray(b_region, float)
-
-        if deg is None:
-            deg = int(getattr(self, "enge_degree", getattr(self, "degree", 15)))
-
-        # Empty side → trivial model
-        if z_region.size == 0:
-            x0 = float(z_mid[0] if (side == "left" and z_mid.size) else (z_mid[-1] if z_mid.size else 0.0))
-            from dataclasses import replace
-            return EngeModel(A=0.0, P=Polynomial([0.0]), x0=x0, baseline=0.0), np.zeros_like(b_region)
-
-        # Boundary location and target from mid sinusoid
-        x0 = float(z_mid[0] if side == "left" else z_mid[-1]) if z_mid.size else float(np.mean(z_region))
-        y_boundary_target = float(sine.eval(np.array([x0]))[0]) if z_mid.size else 0.0
-
-        # ------------------ baseline (only if needed) ------------------
-        B0 = 0.0
-        y_eff = b_region.copy()
-
-        ymax = float(np.max(np.abs(y_eff))) if np.any(y_eff) else 0.0
-        ymin = float(np.min(y_eff)) if np.any(y_eff) else 0.0
-        sgn = float(np.sign(np.mean(y_eff))) or 1.0
-
-        # try an initial A to see if log-mask is already okay
-        A_test = sgn * max(1.05 * max(ymax, 1e-12), 1e-12)
-        mask0 = (y_eff != 0.0) & (np.sign(y_eff) == np.sign(A_test)) & (np.abs(y_eff) < np.abs(A_test))
-
-        tiny_neg = (ymin < -1e-3 * max(1.0, ymax))  # ignore micro negative noise
-        if (mask0.sum() < deg + 1) and tiny_neg:
-            # ensure baseline <= 0 so we don't "lift" edges by default
-            B0 = ymin - y_eps * max(1.0, ymax)
-            y_eff = b_region - B0
-            ymax = float(np.max(np.abs(y_eff))) if np.any(y_eff) else 0.0
-            sgn = float(np.sign(np.mean(y_eff))) or 1.0
-
-        if ymax == 0.0:
-            return EngeModel(A=0.0, P=Polynomial([0.0]), x0=x0, baseline=B0), np.full_like(b_region, B0)
-
-        # ------------------ A candidates ------------------
-        lo_mag = max(1.05 * ymax, 1e-9)
-        hi_mag = max(5.0 * ymax, lo_mag * 1.0001)
-        A_candidates = sgn * np.geomspace(lo_mag, hi_mag, num=32)
-
-        def _fit_P_for_A(A: float):
-            # valid for log-transform
-            m = (y_eff != 0.0) & (np.sign(y_eff) == np.sign(A)) & (np.abs(y_eff) < np.abs(A))
-            if m.sum() < deg + 1:
-                return None, None
-
-            u = z_region[m] - x0
-
-            # ---- scale u to [-1,1] and fit there ----
-            umin, umax = float(np.min(u)), float(np.max(u))
-            span = max(umax - umin, 1e-12)
-            a = 2.0 / span
-            b = -(2.0 * umin / span) - 1.0
-            u_scaled = a * u + b
-
-            t = np.log(A / y_eff[m] - 1.0)
-
-            deg_use = min(int(deg), max(0, len(u_scaled) - 1))
-            if deg_use < 0:
-                return None, None
-
-            P_scaled = Polynomial.fit(u_scaled, t, deg=deg_use).convert()
-            # Compose back: P_u(u) = P_scaled(a*u + b)
-            if hasattr(Polynomial, "compose"):
-                P_u = P_scaled.compose(Polynomial([b, a]))
+    def _fit_poly_side(self, z_region, b_region, z_sines, sine, num_slices, left_side):
+        deg = self.degree
+        slices = self._balanced_slices(len(z_region), num_slices)
+        if left_side:
+            slices = list(reversed(slices))
+        fit_reg = np.zeros_like(z_region, dtype=float)
+        pieces = []
+        prev_poly = None
+        prev_z = None
+        for ix, s in enumerate(slices):
+            z_this, b_this = z_region[s], b_region[s]
+            boundaries = self._boundary_from_sine(z_sines, sine) if ix == 0 else self._boundary_from_poly(prev_z, prev_poly)
+            if deg >= 5:
+                if left_side:
+                    dbL = (-3 * b_this[0] + 4 * b_this[1] - b_this[2]) / (2 * self.dz)
+                    d2L = (2 * b_this[0] - 5 * b_this[1] + 4 * b_this[2] - b_this[3]) / (self.dz ** 2)
+                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
+                                               x0=[z_this[0], z_this[-1]], y0=[b_this[0], boundaries[0]],
+                                               xp0=[z_this[0], z_this[-1]], yp0=[dbL, boundaries[2]],
+                                               xpp0=[z_this[0], z_this[-1]], ypp0=[d2L, boundaries[4]])
+                else:
+                    dbR = (3 * b_this[-1] - 4 * b_this[-2] + b_this[-3]) / (2 * self.dz)
+                    d2R = (2 * b_this[-1] - 5 * b_this[-2] + 4 * b_this[-3] - b_this[-4]) / (self.dz ** 2)
+                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
+                                               x0=[z_this[0], z_this[-1]], y0=[boundaries[1], b_this[-1]],
+                                               xp0=[z_this[0], z_this[-1]], yp0=[boundaries[3], dbR],
+                                               xpp0=[z_this[0], z_this[-1]], ypp0=[boundaries[5], d2R])
+            elif deg >= 3:
+                if left_side:
+                    dbL = (-3 * b_this[0] + 4 * b_this[1] - b_this[2]) / (2 * self.dz)
+                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
+                                               x0=[z_this[0], z_this[-1]], y0=[b_this[0], boundaries[0]],
+                                               xp0=[z_this[0], z_this[-1]], yp0=[dbL, boundaries[2]])
+                else:
+                    dbR = (3 * b_this[-1] - 4 * b_this[-2] + b_this[-3]) / (2 * self.dz)
+                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
+                                               x0=[z_this[0], z_this[-1]], y0=[boundaries[1], b_this[-1]],
+                                               xp0=[z_this[0], z_this[-1]], yp0=[boundaries[3], dbR])
             else:
-                P_u = self._compose_poly_linear(P_scaled, a=a, b=b)
-
-            return P_u, deg_use
-
-        def _score_A(A: float):
-            P_u, _ = _fit_P_for_A(A)
-            if P_u is None:
-                return np.inf, None, None
-
-            t_all = expit(-P_u(z_region - x0))
-            y_hat = B0 + A * t_all
-
-            mse = float(np.mean((y_hat - b_region) ** 2))
-
-            # boundary penalty (value only)
-            t0 = expit(-P_u(0.0))
-            yb_pred_eff = A * t0
-            yb_target_eff = y_boundary_target - B0
-            score = mse + boundary_weight * (yb_pred_eff - yb_target_eff) ** 2
-            return score, P_u, y_hat
-
-        # scan over A
-        best = None
-        for Ac in A_candidates:
-            sc, Pu, yhat = _score_A(Ac)
-            if np.isfinite(sc) and (best is None or sc < best["score"]):
-                best = dict(score=sc, A=Ac, P_u=Pu, y_hat=yhat)
-
-        if best is None:
-            return EngeModel(A=0.0, P=Polynomial([0.0]), x0=x0, baseline=B0), B0 + np.zeros_like(b_region)
-
-        A_opt = float(best["A"])
-        P_u_opt = best["P_u"]
-        y_fit = best["y_hat"]
-
-        # safe boundary snap (avoid saturation)
-        from scipy.special import expit as _expit
-        t0 = _expit(-P_u_opt(0.0))
-        if 1e-6 < t0 < 1.0 - 1e-6:
-            A_adj = (y_boundary_target - B0) / t0
-            A_cap = 100.0 * max(1e-12, ymax)
-            if np.isfinite(A_adj) and np.abs(A_adj) <= A_cap:
-                A_opt = float(A_adj)
-                y_fit = B0 + A_opt * _expit(-P_u_opt(z_region - x0))
-
-        enge = EngeModel(A=A_opt, P=P_u_opt, x0=x0, baseline=B0)
-        return enge, y_fit
-
-        # Helper: score for A (MSE + boundary penalty), using logistic
-        def _score_A(A: float):
-            P_u, deg_used = _fit_P_for_A(A)
-            if P_u is None:
-                return np.inf, None, None
-
-            t_all = expit(-P_u(z_region - x0))
-            y_hat_eff = A * t_all
-            y_hat = B0 + y_hat_eff
-
-            mse = float(np.mean((y_hat - b_region) ** 2))
-
-            # boundary penalty (value)
-            t0 = expit(-P_u(0.0))
-            yb_pred_eff = A * t0
-            score = mse + boundary_weight * (yb_pred_eff - yb_target_eff) ** 2
-            return score, P_u, y_hat
-
-        # Scan
-        for Ac in A_candidates:
-            score, P_u, y_hat = _score_A(Ac)
-            if np.isfinite(score) and (best is None or score < best["score"]):
-                best = dict(score=score, A=Ac, P_u=P_u, y_hat=y_hat)
-
-        if best is None:
-            enge = EngeModel(A=0.0, P=Polynomial([0.0]), x0=x0, baseline=B0)
-            return enge, B0 + np.zeros_like(b_region)
-
-        A_opt = float(best["A"])
-        P_u_opt = best["P_u"]
-        y_fit = best["y_hat"]
-
-        # Optional: safe boundary "snap" (avoid saturation)
-        t0 = expit(-P_u_opt(0.0))
-        if 1e-6 < t0 < 1.0 - 1e-6:
-            A_adj = yb_target_eff / t0
-            A_cap = 100.0 * max(1e-12, ymax)
-            if np.isfinite(A_adj) and np.abs(A_adj) <= A_cap:
-                A_opt = float(A_adj)
-                y_fit = B0 + A_opt * expit(-P_u_opt(z_region - x0))
-
-        enge = EngeModel(A=A_opt, P=P_u_opt, x0=x0, baseline=B0)
-        return enge, y_fit
+                if left_side:
+                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
+                                               x0=[z_this[0], z_this[-1]], y0=[b_this[0], boundaries[0]])
+                else:
+                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
+                                               x0=[z_this[0], z_this[-1]], y0=[boundaries[1], b_this[-1]])
+            poly = Polynomial(coeffs)
+            fit_reg[s] = poly(z_this)
+            prev_poly, prev_z = poly, z_this
+            pieces.append((s.start, poly))
+        return fit_reg, pieces
 
     def _fit_edges(self) -> None:
         z = self.z_full
@@ -770,15 +466,14 @@ class Wiggler:
             z_left, b_left = z[:i0], ch.data[:i0]
             z_right, b_right = z[i1:], ch.data[i1:]
             z_mid = z[i0:i1]
-
-            engeL, fitL = self._fit_enge_side(z_left, b_left, z_mid, ch.sine, side="left", deg=self.enge_degree)
-            engeR, fitR = self._fit_enge_side(z_right, b_right, z_mid, ch.sine, side="right", deg=self.enge_degree)
-
-            ch.left, ch.right = engeL, engeR
+            ns_left, ns_right = self.slice_counts[c]["left"], self.slice_counts[c]["right"]
+            fitL, piecesL = self._fit_poly_side(z_left, b_left, z_mid, ch.sine, ns_left, True)
+            fitR, piecesR = self._fit_poly_side(z_right, b_right, z_mid, ch.sine, ns_right, False)
+            ch.left.set_pieces([p[0] for p in piecesL], [p[1] for p in piecesL])
+            ch.right.set_pieces([i1 + p[0] for p in piecesR], [p[1] for p in piecesR])
             ch.fit = np.zeros_like(ch.data, dtype=float)
-            if fitL.size: ch.fit[:i0] = fitL
-            if fitR.size: ch.fit[i1:] = fitR
-            ch.fit[i0:i1] = ch.sine.eval(z[i0:i1])
+            ch.fit[:i0] = fitL
+            ch.fit[i1:] = fitR
 
     # ------------------------------ Merge & eval ------------------------------
     def _merge_sections(self) -> None:
@@ -799,9 +494,9 @@ class Wiggler:
             mid_mask = (zq >= z0) & (zq <= z1)
             right_mask = zq > z1
             y = np.empty_like(zq, dtype=float)
-            y[left_mask]  = ch.left.eval(zq[left_mask])
+            y[left_mask] = ch.left.eval(zq[left_mask], self.z_full)
             y[mid_mask] = ch.sine.eval(zq[mid_mask])
-            y[right_mask] = ch.right.eval(zq[right_mask])
+            y[right_mask] = ch.right.eval(zq[right_mask], self.z_full)
             out[c] = y
         return out
 
@@ -1140,6 +835,201 @@ class Wiggler:
             return "0"
         expr = " + ".join(terms).replace("+ -", "- ")
         return f"({expr})"
+
+    def to_piecewise_string(
+        self,
+        field: str = "Bx",
+        *,
+        var: str = "s",
+        coeff_fmt: str = ".12g",
+        k_fmt: str | None = None,
+        tol: float = 0.0,
+        include_left: bool = True,
+        include_middle: bool = True,
+        include_right: bool = True,
+    ) -> str:
+        """Export the stitched *fit* for a field as a SymPy-ready Piecewise string.
+
+        Intervals use left-closed / right-open bounds, except the final right slice,
+        which is right-closed. Numbers are formatted with `coeff_fmt`.
+        """
+        self._ensure("data", "borders", "sines")
+        ch = self.fields[field]
+        z = self.z_full
+        i0, i1 = ch.borders_idx  # mid is [i0:i1)
+        pieces: list[tuple[str, str]] = []  # (expr_str, cond_str)
+
+        def cond_interval(L: float, R: float, right_closed: bool = False) -> str:
+            Ls = self._fmt_num(L, coeff_fmt)
+            Rs = self._fmt_num(R, coeff_fmt)
+            op = "<=" if right_closed else "<"
+            return f"(({var} >= {Ls}) & ({var} {op} {Rs}))"
+
+        # Left pieces
+        if include_left and ch.left.polys:
+            starts = ch.left.starts
+            polys = ch.left.polys
+            for idx, (sidx, poly) in enumerate(zip(starts, polys)):
+                L = z[sidx]
+                if idx < len(starts) - 1:
+                    R = z[starts[idx + 1]]
+                    pieces.append((self._poly_to_string(poly, var, coeff_fmt, tol), cond_interval(L, R)))
+                else:
+                    R = z[i0]
+                    pieces.append((self._poly_to_string(poly, var, coeff_fmt, tol), cond_interval(L, R)))
+
+        # Middle sinusoid
+        if include_middle:
+            # right bound: z[i1] if exists (right-open), else z[-1] right-closed
+            Lm = z[i0]
+            if i1 < len(z):
+                Rm = z[i1]
+                mid_cond = cond_interval(Lm, Rm)
+            else:
+                Rm = z[-1]
+                mid_cond = cond_interval(Lm, Rm, right_closed=True)
+            sine_expr = ch.sine.series_string(coeff_fmt=coeff_fmt, k_fmt=k_fmt, tol=tol)
+            pieces.append((f"({sine_expr})", mid_cond))
+
+        # Right pieces
+        if include_right and ch.right.polys:
+            starts = ch.right.starts
+            polys = ch.right.polys
+            for idx, (sidx, poly) in enumerate(zip(starts, polys)):
+                L = z[sidx]
+                if idx < len(starts) - 1:
+                    R = z[starts[idx + 1]]
+                    pieces.append((self._poly_to_string(poly, var, coeff_fmt, tol), cond_interval(L, R)))
+                else:
+                    R = z[-1]
+                    pieces.append((self._poly_to_string(poly, var, coeff_fmt, tol), cond_interval(L, R, right_closed=True)))
+
+        # Assemble Piecewise
+        inner = ", ".join(f"({expr}, {cond})" for expr, cond in pieces)
+        return f"Piecewise({inner})"
+
+    def to_piecewise_curvature_string(
+        self,
+        field: str = "Bx",
+        *,
+        axis: str = "x",           # "x" -> d2/dx2,  "y" -> d2/dy2
+        var: str = "s",
+        coeff_fmt: str = ".12g",
+        k_fmt: str | None = None,
+        tol: float = 0.0,
+        include_left: bool = True,
+        include_middle: bool = True,
+        include_right: bool = True,
+        ensure_fit: bool = True,
+        method: str = "locked",
+    ) -> str:
+        """Export a Piecewise string for the *curvature* stitched fit.
+
+        - Edges: second derivative of the edge polynomials.
+        - Middle: curvature sine model previously fitted for the given axis.
+        """
+        if ensure_fit:
+            if self.parabola is None:
+                self.fit_transverse_parabolas(region="mid")
+            if field not in self.curv_sines.get(axis, {}):
+                self.fit_second_derivative_sinusoids(axis=axis, fields=(field,), method=method)
+
+        ch = self.fields[field]
+        z = self.z_full
+        i0, i1 = ch.borders_idx
+        pieces: list[tuple[str, str]] = []
+
+        def cond_interval(L: float, R: float, right_closed: bool = False) -> str:
+            Ls = self._fmt_num(L, coeff_fmt)
+            Rs = self._fmt_num(R, coeff_fmt)
+            op = "<=" if right_closed else "<"
+            return f"(({var} >= {Ls}) & ({var} {op} {Rs}))"
+
+        # Left pieces: second derivative of polys
+        if include_left and ch.left.polys:
+            starts = ch.left.starts
+            polys = [p.deriv(2) for p in ch.left.polys]
+            for idx, (sidx, poly2) in enumerate(zip(starts, polys)):
+                L = z[sidx]
+                if idx < len(starts) - 1:
+                    R = z[starts[idx + 1]]
+                    pieces.append((self._poly_to_string(poly2, var, coeff_fmt, tol), cond_interval(L, R)))
+                else:
+                    R = z[i0]
+                    pieces.append((self._poly_to_string(poly2, var, coeff_fmt, tol), cond_interval(L, R)))
+
+        # Middle curvature sinusoid
+        if include_middle:
+            Lm = z[i0]
+            if i1 < len(z):
+                Rm = z[i1]
+                mid_cond = cond_interval(Lm, Rm)
+            else:
+                Rm = z[-1]
+                mid_cond = cond_interval(Lm, Rm, right_closed=True)
+            sine_expr = self.curv_sines[axis][field].series_string(coeff_fmt=coeff_fmt, k_fmt=k_fmt, tol=tol)
+            pieces.append((f"({sine_expr})", mid_cond))
+
+        # Right pieces: second derivative of polys
+        if include_right and ch.right.polys:
+            starts = ch.right.starts
+            polys = [p.deriv(2) for p in ch.right.polys]
+            for idx, (sidx, poly2) in enumerate(zip(starts, polys)):
+                L = z[sidx]
+                if idx < len(starts) - 1:
+                    R = z[starts[idx + 1]]
+                    pieces.append((self._poly_to_string(poly2, var, coeff_fmt, tol), cond_interval(L, R)))
+                else:
+                    R = z[-1]
+                    pieces.append((self._poly_to_string(poly2, var, coeff_fmt, tol), cond_interval(L, R, right_closed=True)))
+
+        inner = ", ".join(f"({expr}, {cond})" for expr, cond in pieces)
+        return f"Piecewise({inner})"
+
+    # ------------------------------ Tuning ------------------------------
+    def tune_slices_for_zero_integral(self, field="all", left_candidates=None, right_candidates=None, tradeoff_mse=0.0, verbose=None):
+        if verbose is None:
+            verbose = self.verbose
+        self._ensure("data", "borders", "sines")
+        def _score(y_fit, y_data, z):
+            I = sc.integrate.cumulative_trapezoid(y_fit, x=z, initial=0.0)
+            I_end = I[-1]
+            if tradeoff_mse:
+                mse = np.mean((y_fit - y_data) ** 2)
+                return abs(I_end) + tradeoff_mse * mse, I_end, mse
+            return abs(I_end), I_end, None
+        def _tune_one(name: str):
+            ch = self.fields[name]; z = self.z_full; i0, i1 = ch.borders_idx
+            z_left, b_left, z_right, b_right = z[:i0], ch.data[:i0], z[i1:], ch.data[i1:]
+            z_mid = z[i0:i1]
+            Ls = range(max(2, self.slice_counts[name]["left"] - 8), self.slice_counts[name]["left"] + 9) if left_candidates is None else list(left_candidates)
+            Rs = range(max(2, self.slice_counts[name]["right"] - 8), self.slice_counts[name]["right"] + 9) if right_candidates is None else list(right_candidates)
+            best = None
+            for L in Ls:
+                for R in Rs:
+                    fitL, piecesL = self._fit_poly_side(z_left, b_left, z_mid, ch.sine, L, True)
+                    fitR, piecesR = self._fit_poly_side(z_right, b_right, z_mid, ch.sine, R, False)
+                    y_fit = np.zeros_like(ch.data, dtype=float)
+                    y_fit[:i0] = fitL; y_fit[i1:] = fitR
+                    mid_mask = (z >= z[i0]) & (z <= z[i1 - 1])
+                    y_fit[mid_mask] = ch.sine.eval(z[mid_mask])
+                    score, I_end, mse = _score(y_fit, ch.data, z)
+                    if best is None or score < best["score"]:
+                        best = {"score": score, "I_end": I_end, "mse": mse, "L": L, "R": R,
+                                "fit": y_fit, "piecesL": piecesL, "piecesR": piecesR}
+            if verbose:
+                msg = f"[{name}] best slices: left={best['L']} right={best['R']} |I_end|={abs(best['I_end']):.3e}"
+                if tradeoff_mse and best["mse"] is not None:
+                    msg += f"  mse={best['mse']:.3e}"
+                print(msg)
+            ch.fit = best["fit"]
+            ch.left.set_pieces([p[0] for p in best["piecesL"]], [p[1] for p in best["piecesL"]])
+            ch.right.set_pieces([i1 + p[0] for p in best["piecesR"]], [p[1] for p in best["piecesR"]])
+            self.slice_counts[name]["left"], self.slice_counts[name]["right"] = best["L"], best["R"]
+        targets = [field] if field in self.COMPONENTS else (["Bx", "By"] if field == "both" else list(self.COMPONENTS))
+        for name in targets:
+            _tune_one(name)
+        self._merge_sections(); self._compute_primitives()
 
     # ------------------------------ Results ------------------------------
     def results(self) -> Dict[str, object]:
