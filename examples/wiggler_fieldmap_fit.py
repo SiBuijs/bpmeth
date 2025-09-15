@@ -71,6 +71,7 @@ by_peaks   = by_peaks[0][np.logical_and(by_peaks[0] > 99, by_peaks[0] < 2100)]
 bx_valleys = bx_valleys[0][np.logical_and(bx_valleys[0] > 99, bx_valleys[0] < 2100)]
 by_valleys = by_valleys[0][np.logical_and(by_valleys[0] > 99, by_valleys[0] < 2100)]
 
+Bx_extrema = np.sort(np.concatenate((bx_peaks, bx_valleys)))
 # Splits the magnetic field into five regions. The regions are decided based on the peaks and valleys of B_x.
 # The region between -1100 and xborderleft goes from the start until the first peak. We fit a series of polynomials.
 # The region between xborderleft and xborderright encompasses the sinusoidal region in the middle. We fit a sinusoid.
@@ -123,7 +124,6 @@ plt.show()
 print(zy_regionright)
 print(by_regionright)
 plt.plot(zy_regionright, by_regionright)
-plt.show()
 
 ########################################################################################################################
 # SINUSOID FITTING

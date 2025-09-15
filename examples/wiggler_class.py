@@ -11,224 +11,20 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import scipy as sc
-from scipy.signal import find_peaks, savgol_filter
+from scipy.signal import find_peaks
 from scipy.optimize import curve_fit
+from scipy.special import expit
 from numpy.polynomial import Polynomial
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, Tuple, Optional
 import matplotlib.pyplot as plt
 from scipy.special import expit
-
-
-# ========================== Small helper classes ==========================
-
-@dataclass
-class SineModel:
-    Acos: Optional[np.ndarray] = None
-    Asin: Optional[np.ndarray] = None
-    k: Optional[np.ndarray] = None
-
-    def is_ready(self) -> bool:
-        return self.Acos is not None and self.Asin is not None and self.k is not None
-
-    def eval(self, z: np.ndarray) -> np.ndarray:
-        if not self.is_ready():
-            return np.zeros_like(z, dtype=float)
-        y = np.zeros_like(z, dtype=float)
-        for A1, A2, kk in zip(self.Acos, self.Asin, self.k):
-            y += A1 * np.cos(kk * z) + A2 * np.sin(kk * z)
-        return y
-
-    # Pretty-printer for the series (kept from your version)
-    def series_string(
-            self,
-            *,
-            in_terms_of: str = "s",  # ignored (kept for compatibility)
-            var: Optional[str] = None,  # ignored (kept for compatibility)
-            coeff_fmt: str = ".6g",
-            k_fmt: Optional[str] = None,
-            tol: float = 0.0,
-            include_cos: bool = True,
-            include_sin: bool = True,
-            sort_by_k: bool = True,
-    ) -> str:
-        if not self.is_ready():
-            return "0"
-
-        cf, kf = coeff_fmt, (k_fmt or coeff_fmt)
-
-        # Always emit in terms of s (we ignore var/in_terms_of)
-        arg = "s"
-
-        idx = np.arange(len(self.k))
-        if sort_by_k:
-            idx = idx[np.argsort(self.k)]
-
-        parts = []
-        for i in idx:
-            A1, A2, kk = float(self.Acos[i]), float(self.Asin[i]), float(self.k[i])
-            kk_str = format(kk, kf)
-            if include_cos and abs(A1) > tol:
-                parts.append(f"{format(A1, cf)}*cos({kk_str}*{arg})")
-            if include_sin and abs(A2) > tol:
-                parts.append(f"{format(A2, cf)}*sin({kk_str}*{arg})")
-
-        if not parts:
-            return "0"
-
-        expr = " + ".join(parts).replace("+ -", "- ")
-        if expr.startswith("+ "):
-            expr = expr[2:]
-        return expr
-
-@dataclass
-class EngeModel:
-    """
-    Minimal container + evaluators for a single Enge edge:
-        f(s) = A / (1 + exp(P(s - x0)))
-
-    - A : amplitude (float)
-    - P : numpy.polynomial.Polynomial (ascending powers), defined in the shifted coordinate u = s - x0
-    - x0: shift (float), typically set to the mid/edge boundary to keep coefficients well-scaled.
-
-    This class mirrors SineModel in spirit: it *stores* parameters and provides `eval()`;
-    the actual fitting is handled elsewhere.
-    """
-    A: float | None = None
-    P: Polynomial | None = None
-    x0: float = 0.0
-    baseline: float = 0.0
-
-    def is_ready(self) -> bool:
-        return (self.A is not None) and (self.P is not None)
-
-    def eval(self, s: np.ndarray) -> np.ndarray:
-        if not self.is_ready():
-            return np.zeros_like(s, dtype=float)
-        u = s - self.x0
-        return self.baseline + self.A * expit(-self.P(u))
-
-    def eval_derivative(self, s: np.ndarray) -> np.ndarray:
-        if not self.is_ready():
-            return np.zeros_like(s, dtype=float)
-        u   = s - self.x0
-        Pu  = self.P(u)
-        P1u = self.P.deriv(1)(u)
-        t   = expit(-Pu)
-        return -self.A * P1u * t * (1.0 - t)
-
-    def eval_second_derivative(self, s: np.ndarray) -> np.ndarray:
-        if not self.is_ready():
-            return np.zeros_like(s, dtype=float)
-        u    = s - self.x0
-        Pu   = self.P(u)
-        P1u  = self.P.deriv(1)(u)
-        P2u  = self.P.deriv(2)(u)
-        t    = expit(-Pu)
-        return -self.A * t * (1.0 - t) * (P2u + (2.0 * t - 1.0) * (P1u ** 2))
-
-    # optional: string helpers for exports
-    def _poly_to_string(self, poly: Polynomial, var: str = "s", coeff_fmt: str = ".12g", tol: float = 0.0) -> str:
-        coefs = poly.coef
-        parts = []
-        for p, c in enumerate(coefs):
-            if abs(c) <= tol:
-                continue
-            if p == 0: parts.append(f"{c:{coeff_fmt}}")
-            elif p == 1: parts.append(f"{c:{coeff_fmt}}*{var}")
-            else: parts.append(f"{c:{coeff_fmt}}*{var}**{p}")
-        if not parts: return "0"
-        expr = " + ".join(parts).replace("+ -", "- ")
-        return expr[2:] if expr.startswith("+ ") else expr
-
-    # Add inside EngeModel
-
-    def _coeffs_u_to_s_ascending(self) -> np.ndarray:
-        """
-        Convert P(u)=sum c_i u^i with u=s-x0 into P(s)=sum a_j s^j.
-        Returns a (ascending) array [a0, a1, ..., an].
-        """
-        if self.P is None:
-            return np.array([0.0])
-        c = np.array(self.P.coef, dtype=float)  # ascending in u
-        n = len(c) - 1
-        a = np.zeros(n + 1, dtype=float)  # ascending in s
-        if n >= 0:
-            # a_j = sum_{i=j..n} c_i * C(i,j) * (-x0)^(i-j)
-            from math import comb
-            for i in range(n + 1):
-                for j in range(i + 1):
-                    a[j] += c[i] * comb(i, j) * ((-self.x0) ** (i - j))
-        return a
-
-    def sympy_params_for_spEnge(self):
-        """
-        Returns (A, coeffs_desc) where coeffs_desc is a list of polynomial
-        coefficients in s for SymPy Poly(..., s), in DESCENDING power order.
-        """
-        if not self.is_ready():
-            return 0.0, [0.0]
-        a_asc = self._coeffs_u_to_s_ascending()
-        coeffs_desc = list(a_asc[::-1])  # descending for SymPy
-        return float(self.A), coeffs_desc
-
-    def expr_string(self, var: str = "s", coeff_fmt: str = ".12g", tol: float = 0.0, *, style: str = "direct") -> str:
-        """
-        style="direct":  returns    A/(1+exp(P(var - x0)))
-        style="bpmeth":  returns    spEnge(var, A, *coeffs_in_s_desc)
-        """
-        if not self.is_ready():
-            return "0"
-        if style == "bpmeth":
-            A, coeffs_desc = self.sympy_params_for_spEnge()
-            coeffs_str = ", ".join(f"{c:{coeff_fmt}}" for c in coeffs_desc)
-            return f"spEnge({var}, {A:{coeff_fmt}}, {coeffs_str})"
-        # default: direct form with shift shown explicitly
-        u = f"({var} - {self.x0:{coeff_fmt}})"
-        poly_str = self._poly_to_string(self.P, var=u, coeff_fmt=coeff_fmt, tol=tol)
-        return f"({self.A:{coeff_fmt}})/(1 + exp({poly_str}))"
-
-    def curvature_expr_string(self, var: str = "s", coeff_fmt: str = ".12g", tol: float = 0.0) -> str:
-        if not self.is_ready():
-            return "0"
-        u = f"({var} - {self.x0:{coeff_fmt}})"
-        P  = self._poly_to_string(self.P, var=u, coeff_fmt=coeff_fmt, tol=tol)
-        P1 = self._poly_to_string(self.P.deriv(1), var=u, coeff_fmt=coeff_fmt, tol=tol)
-        P2 = self._poly_to_string(self.P.deriv(2), var=u, coeff_fmt=coeff_fmt, tol=tol)
-        return (f"-({self.A:{coeff_fmt}})*exp({P})*((({P1})**2 + ({P2})) + exp({P})*(({P2}) - ({P1})**2))"
-                f"/(1 + exp({P}))**3")
-
-@dataclass
-class FieldChannel:
-    data: Optional[np.ndarray] = None
-    fit: Optional[np.ndarray] = None
-    borders_idx: Optional[Tuple[int, int]] = None  # [i0:i1)
-    borders_z: Optional[Tuple[float, float]] = None
-    sine: SineModel = field(default_factory=SineModel)
-    left: EngeModel = field(default_factory=EngeModel)
-    right: EngeModel = field(default_factory=EngeModel)
+from scipy.odr import polynomial
 
 
 # ================================ Main class ================================
 
 class Wiggler:
-    """Compact Wiggler fitter (Bx, By, Bz + curvature fits).
-
-    Public API:
-      - plot_fields(), plot_integral(), plot_raw_fields()
-      - fit_transverse_parabolas(), plot_second_derivatives()
-      - fit_second_derivative_sinusoids(), plot_second_derivative_fit()
-      - curvature_series_string()
-      - to_piecewise_string(), to_piecewise_curvature_string()
-
-    Public API:
-      - plot_fields(), plot_integral(), plot_raw_fields()
-      - fit_transverse_parabolas(), plot_second_derivatives()
-      - fit_second_derivative_sinusoids(), plot_second_derivative_fit()
-      - curvature_series_string()
-    """
-
-    COMPONENTS = ("Bx", "By", "Bz")
 
     def __init__(
         self,
@@ -236,911 +32,290 @@ class Wiggler:
         xy_point=(0, 0),
         dx=0.001,
         dy=0.001,
-        dz=0.001,
-        enge_degree: int = 15,
+        ds=0.001,
         peak_window=(100, 2100),
-        n_modes_x=None,
-        n_modes_y=None,
-        n_modes_z=None,
-        verbose=False,
+        n_modes=[3, 3, 3],
+        enge_deg = [[15, 15], [15, 15], [15, 15]]
     ):
+
         self.file_path = file_path
         self.xy_point = xy_point
-        self.dx, self.dy, self.dz = dx, dy, dz
-        self.enge_degree = enge_degree
+        self.dx, self.dy, self.ds = dx, dy, ds
         self.peak_window = peak_window
-        self.verbose = verbose
 
-        self.n_modes = {"Bx": n_modes_x, "By": n_modes_y, "Bz": n_modes_z}
+        self.shapes = {
+            "Bx": {"n_modes": n_modes[0], "enge_deg_L": enge_deg[0][0], "enge_deg_R": enge_deg[0][1]},
+            "By": {"n_modes": n_modes[1], "enge_deg_L": enge_deg[1][0], "enge_deg_R": enge_deg[1][1]},
+            "Bs": {"n_modes": n_modes[2], "enge_deg_L": enge_deg[2][0], "enge_deg_R": enge_deg[2][1]},
+        }
 
-        self.df: Optional[pd.DataFrame] = None
-        self.z_full: Optional[np.ndarray] = None
-        self.fields: Dict[str, FieldChannel] = {c: FieldChannel() for c in self.COMPONENTS}
+        self.df = None
+        self.s_full = None
 
-        self.primitives = {"data": {c: None for c in self.COMPONENTS},
-                           "fit": {c: None for c in self.COMPONENTS}}
-        self.parabola = None           # set by fit_transverse_parabolas
-        self.curv_sines = {"x": {}, "y": {}}  # set by fit_second_derivative_sinusoids
+        # Dictionary that holds a list of borders for each field
+        self.borders_idx = {"Bx": None, "By": None, "Bs": None}
 
-    # ------------------------------ Utilities ------------------------------
-    def _ensure(self, *needs: str) -> None:
-        """Ensure preconditions ("data", "borders", "sines", "parabola")."""
-        if "data" in needs and (self.df is None or self.z_full is None or any(self.fields[c].data is None for c in self.COMPONENTS)):
-            self._parse_to_dataframe()
-            self._select_xy()
-        if "borders" in needs and any(self.fields[c].borders_idx is None for c in self.COMPONENTS):
-            self._find_borders()
-        if "sines" in needs and any(not self.fields[c].sine.is_ready() for c in self.COMPONENTS):
-            self._fit_sinusoids()
-        if "parabola" in needs and self.parabola is None:
-            self.fit_transverse_parabolas(region="mid")
+        # Data dictionaries
+        # raw_data holds the data from the file
+        # fit_data holds the data generated by fitting
+        self.raw_data = {"Bx": None, "By": None, "Bs": None}
+        self.fit_data = {"Bx": None, "By": None, "Bs": None}
 
-    def _mid_slice(self, comp: str) -> slice:
-        i0, i1 = self.fields[comp].borders_idx
-        return slice(i0, i1)
+        # Dictionary to hold lists of fitted parameters for each field component
+        self.fit_pars = {
+            "Bx": {"enge_L": None,"sines" : None , "enge_R": None},
+            "By": {"enge_L": None,"sines" : None , "enge_R": None},
+            "Bs": {"enge_L": None,"sines" : None , "enge_R": None},
+        }
 
-    # Magnitude helper
-    def _mag(self, data: Dict[str, np.ndarray]) -> np.ndarray:
-        return np.sqrt(sum(data[c] ** 2 for c in self.COMPONENTS))
+        self.parabola = None
+        self.curv_sines = {"x": {}, "y": {}}
 
-    # ------------------------------ Orchestrator ------------------------------
-    def fit(
-            self,
-            *,
-            curvature: bool = False,
-            curvature_axes: tuple = ("x", "y"),
-            curvature_fields: tuple = ("Bx", "By"),
-            n_modes: Optional[dict] = None,
-            reuse_borders: bool = True,
-            center_xy: Tuple[int, int] = (0, 0),
-            # NEW (optional) Enge knobs:
-            enge_deg: int | None = None,  # default: self.degree
-            enge_use_optimizer: bool = True,  # refine A with bounded 1D search
-            enge_boundary_weight: float = 10.0,  # soft boundary match penalty
-    ) -> None:
-        self._ensure("data")
 
-        if n_modes is not None:
-            for comp in self.COMPONENTS:
-                val = n_modes.get(comp) if isinstance(n_modes, dict) else None
-                if val is not None:
-                    self.n_modes[comp] = val
-
-        self._find_borders()
+    # PUBLIC
+    # Setter method that calls all the other methods to arrive at a fit.
+    def set(self):
+        self._parse_to_dataframe()
+        self.select_xy()
+        self._find_regions()
         self._fit_sinusoids()
-        # pass Enge options down to the edge fitter
-        self._fit_edges()
-        self._merge_sections()
-        self._compute_primitives()
 
-        if curvature:
-            self.fit_transverse_parabolas(center_xy=center_xy, region="mid")
-            if "x" in curvature_axes:
-                self.fit_second_derivative_sinusoids(axis="x", fields=curvature_fields, n_modes=n_modes,
-                                                     reuse_borders=reuse_borders)
-            if "y" in curvature_axes:
-                self.fit_second_derivative_sinusoids(axis="y", fields=curvature_fields, n_modes=n_modes,
-                                                     reuse_borders=reuse_borders)
+    ####################################################################################################################
+    # EVALUATION FUNCTIONS
+    ####################################################################################################################
 
-    # ------------------------------ I/O ------------------------------
+    # PRIVATE
+    # This function evaluates a sum of (co)sines at the given x values.
+    # The parameters are given as a flat list, where each mode has three parameters:
+    #  - Amplitude of the cosine term
+    #  - Amplitude of the sine term
+    #  - Wave number
+    # Thus, for n modes, the parameter list has length 3*n.
+    @staticmethod
+    def _sinusoid(x, *params):
+        # Define the output array
+        y = np.zeros_like(x, dtype=np.float64)
+
+        # The range depends on the number of sinusoids there are present in the function.
+        # B_x is best approximated with two, whereas B_y only needs one.
+        # Note the integer division by 3, because each mode has three parameters.
+        for A1, A2, k in zip(params[::3], params[1::3], params[2::3]):
+            # General sinusoidal part is a linear combination of cosine and sine.
+            # This is equivalent to a single function with a phase-offset, but more numerically stable.
+            y += A1 * np.cos(k * x) + A2 * np.sin(k * x)
+
+        return y
+
+    # PRIVATE
+    # This function evaluates an Enge function at the given x values.
+    # The parameters are given as a list:
+    #  - Amplitude
+    #  - Coefficients of the polynomial in the exponent, starting from the constant term
+    # Thus, for a polynomial of degree n, the parameter list has length n+2
+    @staticmethod
+    def _enge_function(x, *params):
+        amp = params[0]
+        poly = np.polynomial.Polynomial(params[1:])
+        return amp * expit(-poly(x))
+
+
+
+    ####################################################################################################################
+    # IDENTIFYING REGIONS AND SETTING BORDERS IN DATA CLASSES
+    ####################################################################################################################
+
+    # PRIVATE
+    # This method reads the data from the file and stores it in a pandas DataFrame.
     def _parse_to_dataframe(self) -> None:
         df = pd.read_csv(
-            self.file_path, sep=r"\s+", header=None, names=["X", "Y", "Z", "Bx", "By", "Bz"]
+            self.file_path, sep=r"\s+", header=None, names=["X", "Y", "Z", "Bx", "By", "Bs"]
         )
         df.set_index(["X", "Y", "Z"], inplace=True)
         self.df = df
 
-    def _select_xy(self) -> None:
+    # PUBLIC
+    # This method selects the data at the specified (x,y) point and stores it in the fields dictionary.
+    # It is made public so that the user can change the (x,y) point and re-select the data without re-parsing the file.
+    def select_xy(self):
         subset = self.df.xs(self.xy_point, level=["X", "Y"]).sort_index()
-        z_idx = subset.index.to_numpy()
-        self.z_full = z_idx * self.dz
-        for c in self.COMPONENTS:
-            self.fields[c].data = subset[c].to_numpy()
 
-    def _find_borders(self) -> None:
-        z = self.z_full
-        k0, k1 = self.peak_window
+        # Sets the horizontal axis and scales it to meters.
+        self.s_full = subset.index.to_numpy() * self.ds
 
-        def _filter(ix):
-            return ix[(ix >= k0) & (ix <= k1)]
+        # Store the raw data for each field.
+        self.raw_data["Bx"] = subset["Bx"].to_numpy()
+        self.raw_data["By"] = subset["By"].to_numpy()
+        self.raw_data["Bs"] = subset["Bs"].to_numpy()
 
-        def _extrema_indices(y: np.ndarray) -> np.ndarray:
-            # merge peaks & valleys, filter to peak_window, sort, unique
-            p = _filter(find_peaks(y)[0])
-            v = _filter(find_peaks(-y)[0])
-            if p.size + v.size == 0:
-                return np.array([], dtype=int)
-            return np.sort(np.unique(np.concatenate([p, v])))
+        # Now that the raw data is stored, we can initialize the fit_data arrays.
+        self.fit_data["Bx"] = np.zeros_like(self.raw_data["Bx"])
+        self.fit_data["By"] = np.zeros_like(self.raw_data["By"])
+        self.fit_data["Bs"] = np.zeros_like(self.raw_data["Bs"])
 
-        borders = {}
-        n = len(z)
+    # PRIVATE
+    # This method first finds the peaks and valleys in the data for Bx and By
+    # Then, it combines them into one array for the extrema of Bx and By
+    # Finally, it sets the borders_idx attribute of the FieldChannel objects for Bx and By
+    def _find_regions(self):
+        w_left = self.peak_window[0]
+        w_right = self.peak_window[1]
 
-        for comp in self.COMPONENTS:
-            y = self.fields[comp].data
-            ex = _extrema_indices(y)
+        for field in ["Bx", "By", "Bs"]:
+            field_peaks = find_peaks(self.raw_data[field])[0]
+            field_valleys = find_peaks(-self.raw_data[field])[0]
+            field_peaks = field_peaks[np.logical_and(field_peaks > w_left, field_peaks < w_right)]
+            field_valleys = field_valleys[np.logical_and(field_valleys > w_left, field_valleys < w_right)]
+            field_extrema = np.sort(np.concatenate((field_peaks, field_valleys)))
+            self.borders_idx[field] = [field_extrema[1], field_extrema[-2]]
 
-            if len(ex) >= 4:
-                i0, i1 = int(ex[1]), int(ex[-2])  # 2nd and 2nd-last extrema
-            elif len(ex) >= 2:
-                i0, i1 = int(ex[0]), int(ex[-1])  # fall back: first and last
-            elif len(ex) == 1:
-                i0, i1 = int(ex[0]), min(k1, n - 1)  # single extremum: pair with window end
-            else:
-                i0, i1 = max(1, k0), min(k1, n - 1)  # no extrema: use window
 
-            # clamp to keep a valid half-open mid region [i0:i1)
-            i0 = max(1, min(i0, n - 2))
-            i1 = max(i0 + 2, min(i1, n - 1))
 
-            borders[comp] = (i0, i1)
+    ####################################################################################################################
+    # SINUSOID FITTING
+    ####################################################################################################################
 
-        # store both index and z-space borders; mid region is [i0:i1)
-        for comp in self.COMPONENTS:
-            i0, i1 = borders[comp]
-            self.fields[comp].borders_idx = (i0, i1)
-            self.fields[comp].borders_z = (float(z[i0]), float(z[i1 - 1]))
-
-    # ------------------------------ Sinusoid fitting ------------------------------
+    # PRIVATE
+    # This function finds the amplitudes and frequencies of the (co)sines present in the data.
     @staticmethod
-    def _sinusoid_sum(s: np.ndarray, *params) -> np.ndarray:
-        y = np.zeros_like(s, dtype=float)
-        for A1, A2, k in zip(params[::3], params[1::3], params[2::3]):
-            y += A1 * np.cos(k * s) + A2 * np.sin(k * s)
-        return y
+    def _find_modes(x, y, dx, n_modes):
+        # Fourier Transform and frequencies
+        fft = sc.fft.fft(y)
+        fftfreq = sc.fft.fftfreq(len(x), dx)
 
-    def _find_frequencies_topN(self, s: np.ndarray, y: np.ndarray, n_modes: Optional[int]):
-        yw = (y - np.mean(y)) * np.hanning(len(y))
-        Y = np.fft.rfft(yw)
-        f = np.fft.rfftfreq(len(y), d=np.mean(np.diff(s)))
-        mag = np.abs(Y)
-        start = 1
-        peaks, _ = find_peaks(mag[start:])
-        if peaks.size == 0:
-            return np.array([]), np.array([])
-        peaks = peaks + start
-        if n_modes is not None and peaks.size > n_modes:
-            sel = np.argpartition(mag[peaks], -n_modes)[-n_modes:]
-            peaks = peaks[sel]
-        order = np.argsort(mag[peaks])[::-1]
-        peaks = peaks[order]
-        return Y[peaks], f[peaks]
+        # Only keep positive frequencies
+        fft = fft[fftfreq > 0]
+        fftfreq = fftfreq[fftfreq > 0]
 
-    def _fit_sine_to_segment(self, y: np.ndarray, z: np.ndarray, n_modes: Optional[int]) -> SineModel:
-        """Generic multi-sinusoid fit on y(z) within the given *contiguous* segment.
-        Internally recenters for conditioning, then returns a model in global z (no z0).
-        """
-        # Internal centering for frequency pick & non-linear fit
-        zc = 0.5 * (z[0] + z[-1])
-        s = z - zc
-        amps, freqs = self._find_frequencies_topN(s, y, n_modes)
-        if len(freqs) == 0:
-            L = s[-1] - s[0]
-            k_guess = 2 * np.pi / max(L / 2, 1e-6)
-            params0 = np.array([y.ptp() / 2, 0.0, k_guess])
-        else:
-            A_cos = 2 * self.dz * amps.real
-            A_sin = -2 * self.dz * amps.imag
-            params0 = np.empty(3 * len(freqs))
-            for i, (a1, a2, ff) in enumerate(zip(A_cos, A_sin, freqs)):
-                params0[3 * i:3 * i + 3] = (a1, a2, 2 * np.pi * ff)
-        lower = np.tile([-np.inf, -np.inf, 0.0], len(params0) // 3)
-        upper = np.tile([np.inf, np.inf, np.inf], len(params0) // 3)
-        popt, _ = curve_fit(self._sinusoid_sum, s, y, p0=params0, bounds=(lower, upper), maxfev=10000)
-        m = len(popt) // 3
-        # Rotate coefficients back to the global z-origin (eliminate z0):
-        Acos, Asin, K = [], [], []
-        for i in range(m):
-            a1c, a2c, kk = popt[3*i], popt[3*i+1], popt[3*i+2]
-            phi = kk * zc
-            Acos.append(a1c * np.cos(phi) - a2c * np.sin(phi))
-            Asin.append(a1c * np.sin(phi) + a2c * np.cos(phi))
-            K.append(kk)
-        return SineModel(Acos=np.array(Acos), Asin=np.array(Asin), k=np.array(K))
+        # Find peaks in the magnitude spectrum
+        peaks = find_peaks(np.abs(fft))[0]
 
-    def _fit_sinusoids(self) -> None:
-        z = self.z_full
-        for c in self.COMPONENTS:
-            i0, i1 = self.fields[c].borders_idx
-            model = self._fit_sine_to_segment(self.fields[c].data[i0:i1], z[i0:i1], self.n_modes[c])
-            self.fields[c].sine = model
+        # Order peaks by magnitude, descending
+        order = np.argsort(np.abs(fft[peaks]))[::-1]
+        peaks = peaks[order][:n_modes]
 
-    def _fit_enge_scan_opt(
-            self,
-            x: np.ndarray,
-            y: np.ndarray,
-            *,
-            deg: int | None = None,
-            x0: float | None = None,
-            A_candidates: np.ndarray | None = None,
-            optim_bounds: tuple[float, float] | None = None,
-            use_optimizer: bool = True,
-    ) -> tuple[EngeModel, np.ndarray, dict]:
-        """
-        Fit Enge f(s) = A / (1 + exp(P(s - x0))) by:
-          (1) scanning A over A_candidates,
-          (2) optional 1D bounded optimization of A,
-          (3) refitting P at the best A and returning the model and y_fit.
-        Returns: (enge_model, y_fit, info)
-        """
-        x = np.asarray(x, float)
-        y = np.asarray(y, float)
-        if deg is None:
-            deg = int(self.enge_degree)
+        # Extract amplitudes and frequencies in the same order
+        amplitudes = fft[peaks]
+        cos_amps = 2 * dx * amplitudes.real
+        sin_amps = -2 * dx * amplitudes.imag
+        k_values = 2 * np.pi * fftfreq[peaks]
 
-        # choose a stable center
-        if x0 is None:
-            x0 = float(np.mean(x)) if x.size else 0.0
+        return cos_amps, sin_amps, k_values
 
-        # quick exit if y is all ~0
-        ymax = float(np.max(np.abs(y))) if np.any(y) else 0.0
-        if ymax == 0.0:
-            enge = EngeModel(A=0.0, P=Polynomial([0.0]), x0=x0)
-            return enge, np.zeros_like(y), {"A": 0.0, "deg_used": 0, "mse": 0.0}
+    # PRIVATE
+    # This method fits sinusoids to the data in the regions defined by borders_idx.
+    # The fitted parameters are stored in the fit_pars attribute.
+    # The fitted data is stored in the fit_data attribute.
+    # It uses the _find_modes function to get initial guesses for the parameters.
+    def _fit_sinusoids(self):
+        for field in ["Bx", "By", "Bs"]:
+            idx = self.borders_idx[field]
+            s_reg = self.s_full[idx[0]:idx[1]]
+            field_reg = self.raw_data[field][idx[0]:idx[1]]
+            n_modes = self.shapes[field]["n_modes"]
 
-        # sign of A from the edge’s average sign (fallback +1)
-        sgn = float(np.sign(np.mean(y))) or 1.0
+            cos_amps, sin_amps, k_modes = self._find_modes(s_reg, field_reg, self.ds, n_modes)
 
-        # candidate grid for A (magnitudes) if not provided
-        if A_candidates is None:
-            lo = max(1.05 * ymax, 1e-6)
-            hi = max(10.0 * ymax, lo * 1.0001)
-            mags = np.geomspace(lo, hi, num=32)
-            A_candidates = sgn * mags
+            p0 = np.zeros(n_modes*3)
 
-        # helper: fit P for a given A in u = x - x0
-        def _fit_P_for_A(A: float):
-            mask = (y != 0.0) & (np.sign(y) == np.sign(A)) & (np.abs(y) < np.abs(A))
-            if mask.sum() < deg + 1:
-                return None, None
-            u = x[mask] - x0
-            t = np.log(A / y[mask] - 1.0)
-            deg_use = min(deg, max(0, len(u) - 1))
-            if deg_use < 0:
-                return None, None
-            P_u = Polynomial.fit(u, t, deg=deg_use).convert()
-            return P_u, deg_use
+            for ii in range(n_modes):
+                p0[3 * ii] = cos_amps[ii]
+                p0[3 * ii + 1] = sin_amps[ii]
+                p0[3 * ii + 2] = k_modes[ii]
 
-        # error for A (MSE over full region)
-        def _mse_for_A(A: float) -> float:
-            P_u, _deg_used = _fit_P_for_A(A)
-            if P_u is None:
-                return np.inf
-            y_hat = A / (1.0 + np.exp(P_u(x - x0)))
-            return float(np.mean((y_hat - y) ** 2))
+            popt, pcov = curve_fit(self._sinusoid, s_reg, field_reg, p0=p0)
 
-        # (1) manual scan
-        errs = []
-        for Ac in A_candidates:
-            errs.append(_mse_for_A(Ac))
-        i_best_scan = int(np.argmin(errs))
-        A_scan = float(A_candidates[i_best_scan])
-        mse_scan = float(errs[i_best_scan])
+            self.fit_pars[field]["sines"] = popt
+            self.fit_data[field][idx[0]:idx[1]] = self._sinusoid(s_reg, *popt)
 
-        # (2) optional bounded optimizer (refine A)
-        A_opt = A_scan
-        if use_optimizer:
-            # bounds default: the span of candidates (ordered low<high)
-            if optim_bounds is None:
-                lo, hi = float(np.min(A_candidates)), float(np.max(A_candidates))
-                optim_bounds = (min(lo, hi), max(lo, hi))
-            res = minimize_scalar(_mse_for_A, bounds=optim_bounds, method="bounded")
-            if res.success and np.isfinite(res.fun):
-                A_opt = float(res.x)
 
-        # (3) final P and y_fit at A_opt
-        P_final, deg_used = _fit_P_for_A(A_opt)
-        if P_final is None:
-            # fallback to scan result
-            A_opt = A_scan
-            P_final, deg_used = _fit_P_for_A(A_opt)
-        if P_final is None:
-            enge = EngeModel(A=0.0, P=Polynomial([0.0]), x0=x0)
-            return enge, np.zeros_like(y), {"A": 0.0, "deg_used": 0, "mse": float(np.mean(y ** 2))}
 
-        y_fit = A_opt / (1.0 + np.exp(P_final(x - x0)))
-        mse = float(np.mean((y_fit - y) ** 2))
-        enge = EngeModel(A=A_opt, P=P_final, x0=x0)
+    ####################################################################################################################
+    # ENGE FITTING
+    ####################################################################################################################
 
-        info = {
-            "A_scan": A_scan,
-            "mse_scan": mse_scan,
-            "A": A_opt,
-            "deg_used": int(deg_used),
-            "mse": mse,
-        }
-        return enge, y_fit, info
+    # PRIVATE
+    # This method:
+    #  - rescales x to lie between -1 and 1
+    #  - shifts y to be positive
+    @staticmethod
+    def _rescale_xy(x, y):
+        x = (x - np.min(x)) / (np.max(x) - np.min(x)) * 2 - 1
+        if np.min(y) <= 0:
+            y -= np.min(y) - 0.1
+        return x, y
 
-    # ------------------------------ Edge polynomials ------------------------------
-    def _boundary_from_sine(self, z_mid: np.ndarray, sine: SineModel) -> np.ndarray:
-        xL, xR = z_mid[0] - self.dz, z_mid[-1] + self.dz
-        fL = fR = dL = dR = ddL = ddR = 0.0
-        for A1, A2, k in zip(sine.Acos, sine.Asin, sine.k):
-            fL += A1*np.cos(k*xL) + A2*np.sin(k*xL)
-            fR += A1*np.cos(k*xR) + A2*np.sin(k*xR)
-            dL += k*(A2*np.cos(k*xL) - A1*np.sin(k*xL))
-            dR += k*(A2*np.cos(k*xR) - A1*np.sin(k*xR))
-            ddL += -k*k*(A1*np.cos(k*xL) + A2*np.sin(k*xL))
-            ddR += -k*k*(A1*np.cos(k*xR) + A2*np.sin(k*xR))
-        return np.array([fL, fR, dL, dR, ddL, ddR], dtype=float)
+    # PRIVATE
+    # This method rescales the polynomial coefficients after fitting.
+    @staticmethod
+    def _rescale_poly_coeffs(c_u, x_max, x_min):
+        p_u = Polynomial(c_u)
+        delta = x_max - x_min
+        avg   = (x_max + x_min) / 2
+        x   = Polynomial([avg, delta/2])
+        p_x = p_u(x)
+        return p_x.coef
 
-    def _boundary_from_poly(self, z_prev: np.ndarray, poly: Polynomial) -> np.ndarray:
-        xL, xR = z_prev[0] - self.dz, z_prev[-1] + self.dz
-        dp, ddp = poly.deriv(), poly.deriv(2)
-        return np.array([poly(xL), poly(xR), dp(xL), dp(xR), ddp(xL), ddp(xR)], dtype=float)
+    # PRIVATE
+    @staticmethod
+    def _fit_polynomial(x, y, A, deg):
+        t = np.log(A / y - 1)  # transformed targets
+        coeffs = np.polyfit(x, t, deg)  # monomial basis
+        return np.poly1d(coeffs)
 
-    def _compose_poly_linear(self, P: Polynomial, *, a: float, b: float) -> Polynomial:
-        """
-        Return P(a*u + b) as a Polynomial in u. Works on NumPy versions without Polynomial.compose().
-        """
-        T = Polynomial([b, a])  # T(u) = b + a*u
-        out = Polynomial([0.0])  # accumulator
-        # Horner in descending order: ((((c_n)*T + c_{n-1})*T + ...) + c_0)
-        for c in P.coef[::-1]:
-            out = out * T + c
-        return out
+    # PRIVATE
+    def _error_for_A(self, A, x, y, deg):
+        poly = self._fit_polynomial(x, y, A, deg=deg)
+        params = [A] + list(poly.coef)
+        y_hat = self._enge_function(x, *params)
+        return np.sum((y - y_hat) ** 2)
 
-    def _fit_enge_side(
-            self,
-            z_region,
-            b_region,
-            z_mid,
-            sine,
-            *,
-            side: str,  # "left" or "right"
-            deg: int | None = None,
-            boundary_weight: float = 10.0,
-            y_eps: float = 0.05,  # used only when we must enable a baseline
-    ):
-        """
-        Fit one Enge edge on one side:
-            f(s) = baseline + A * σ( -P( (s - x0) ) )
-        with σ = logistic. Returns (EngeModel, y_fit_on_this_region).
-        """
-        import numpy as np
-        from numpy.polynomial import Polynomial
-        from scipy.special import expit
+    def _enge_fit(self, x, y, deg):
+        x_scaled, y_scaled = self._rescale_xy(x, y)
+        A_guess = np.linspace(max(y) * 1.01, 10, 50)
+        res = sc.optimize.minimize_scalar(self._error_for_A, bounds=(A_guess[0], A_guess[-1]), args=(x_scaled, y_scaled, deg), method="bounded")
+        A_opt = res.x
+        poly = self._fit_polynomial(x_scaled, y_scaled, A_opt, deg=deg)
+        params = [A_opt] + list(poly.coef)
+        params[1:] = self._rescale_poly_coeffs(params[1:], np.max(x), np.min(x))
+        return params
 
-        z_region = np.asarray(z_region, float)
-        b_region = np.asarray(b_region, float)
 
-        if deg is None:
-            deg = int(getattr(self, "enge_degree", getattr(self, "degree", 15)))
+    ####################################################################################################################
+    # PLOTTING
+    ####################################################################################################################
 
-        # Empty side → trivial model
-        if z_region.size == 0:
-            x0 = float(z_mid[0] if (side == "left" and z_mid.size) else (z_mid[-1] if z_mid.size else 0.0))
-            from dataclasses import replace
-            return EngeModel(A=0.0, P=Polynomial([0.0]), x0=x0, baseline=0.0), np.zeros_like(b_region)
+    # PUBLIC
+    # Plot the data against the fit.
+    def plot_fields(self):
+        fig1, (ax1, ax2, ax3) = plt.subplots(3, figsize=(10, 4), constrained_layout=True)
+        ax1.plot(self.s_full, self.raw_data["Bx"])
+        ax1.plot(self.s_full, self.fit_data["Bx"])
+        ax2.plot(self.s_full, self.raw_data["By"])
+        ax2.plot(self.s_full, self.fit_data["By"])
+        ax3.plot(self.s_full, self.raw_data["Bs"])
+        ax3.plot(self.s_full, self.fit_data["Bs"])
 
-        # Boundary location and target from mid sinusoid
-        x0 = float(z_mid[0] if side == "left" else z_mid[-1]) if z_mid.size else float(np.mean(z_region))
-        y_boundary_target = float(sine.eval(np.array([x0]))[0]) if z_mid.size else 0.0
+        # Add vertical lines at different positions for each subplot
+        ax1.axvline(x=self.s_full[self.borders_idx["Bx"][0]], color='k', linestyle='--', linewidth=1)
+        ax1.axvline(x=self.s_full[self.borders_idx["Bx"][1]], color='k', linestyle='--', linewidth=1)
+        ax2.axvline(x=self.s_full[self.borders_idx["By"][0]], color='k', linestyle='--', linewidth=1)
+        ax2.axvline(x=self.s_full[self.borders_idx["By"][1]], color='k', linestyle='--', linewidth=1)
 
-        # ------------------ baseline (only if needed) ------------------
-        B0 = 0.0
-        y_eff = b_region.copy()
+        # Label the graphs.
+        ax1.set_title(f"Magnetic Field at (X, Y) = {self.xy_point}")
+        ax2.set_xlabel("Longitudinal Position, $s$, [m]")
+        ax1.set_ylabel("Horizontal Field, $B_x$, [T]")
+        ax2.set_ylabel("Vertical Field, $B_y$, [T]")
+        ax3.set_ylabel("Longitudinal Field, $B_s$, [T]")
 
-        ymax = float(np.max(np.abs(y_eff))) if np.any(y_eff) else 0.0
-        ymin = float(np.min(y_eff)) if np.any(y_eff) else 0.0
-        sgn = float(np.sign(np.mean(y_eff))) or 1.0
+        # Make a legend.
+        ax1.legend(["$B_x$ Data", "$B_x$ Fit"], loc="lower right")
+        ax2.legend(["$B_y$ Data", "$B_y$ Fit"], loc="lower right")
+        ax3.legend(["$B_s$ Data", "$B_s$ Fit"], loc="upper right")
 
-        # try an initial A to see if log-mask is already okay
-        A_test = sgn * max(1.05 * max(ymax, 1e-12), 1e-12)
-        mask0 = (y_eff != 0.0) & (np.sign(y_eff) == np.sign(A_test)) & (np.abs(y_eff) < np.abs(A_test))
+        # Turn on the grids.
+        ax1.grid()
+        ax2.grid()
+        ax3.grid()
 
-        tiny_neg = (ymin < -1e-3 * max(1.0, ymax))  # ignore micro negative noise
-        if (mask0.sum() < deg + 1) and tiny_neg:
-            # ensure baseline <= 0 so we don't "lift" edges by default
-            B0 = ymin - y_eps * max(1.0, ymax)
-            y_eff = b_region - B0
-            ymax = float(np.max(np.abs(y_eff))) if np.any(y_eff) else 0.0
-            sgn = float(np.sign(np.mean(y_eff))) or 1.0
-
-        if ymax == 0.0:
-            return EngeModel(A=0.0, P=Polynomial([0.0]), x0=x0, baseline=B0), np.full_like(b_region, B0)
-
-        # ------------------ A candidates ------------------
-        lo_mag = max(1.05 * ymax, 1e-9)
-        hi_mag = max(5.0 * ymax, lo_mag * 1.0001)
-        A_candidates = sgn * np.geomspace(lo_mag, hi_mag, num=32)
-
-        def _fit_P_for_A(A: float):
-            # valid for log-transform
-            m = (y_eff != 0.0) & (np.sign(y_eff) == np.sign(A)) & (np.abs(y_eff) < np.abs(A))
-            if m.sum() < deg + 1:
-                return None, None
-
-            u = z_region[m] - x0
-
-            # ---- scale u to [-1,1] and fit there ----
-            umin, umax = float(np.min(u)), float(np.max(u))
-            span = max(umax - umin, 1e-12)
-            a = 2.0 / span
-            b = -(2.0 * umin / span) - 1.0
-            u_scaled = a * u + b
-
-            t = np.log(A / y_eff[m] - 1.0)
-
-            deg_use = min(int(deg), max(0, len(u_scaled) - 1))
-            if deg_use < 0:
-                return None, None
-
-            P_scaled = Polynomial.fit(u_scaled, t, deg=deg_use).convert()
-            # Compose back: P_u(u) = P_scaled(a*u + b)
-            if hasattr(Polynomial, "compose"):
-                P_u = P_scaled.compose(Polynomial([b, a]))
-            else:
-                P_u = self._compose_poly_linear(P_scaled, a=a, b=b)
-
-            return P_u, deg_use
-
-        def _score_A(A: float):
-            P_u, _ = _fit_P_for_A(A)
-            if P_u is None:
-                return np.inf, None, None
-
-            t_all = expit(-P_u(z_region - x0))
-            y_hat = B0 + A * t_all
-
-            mse = float(np.mean((y_hat - b_region) ** 2))
-
-            # boundary penalty (value only)
-            t0 = expit(-P_u(0.0))
-            yb_pred_eff = A * t0
-            yb_target_eff = y_boundary_target - B0
-            score = mse + boundary_weight * (yb_pred_eff - yb_target_eff) ** 2
-            return score, P_u, y_hat
-
-        # scan over A
-        best = None
-        for Ac in A_candidates:
-            sc, Pu, yhat = _score_A(Ac)
-            if np.isfinite(sc) and (best is None or sc < best["score"]):
-                best = dict(score=sc, A=Ac, P_u=Pu, y_hat=yhat)
-
-        if best is None:
-            return EngeModel(A=0.0, P=Polynomial([0.0]), x0=x0, baseline=B0), B0 + np.zeros_like(b_region)
-
-        A_opt = float(best["A"])
-        P_u_opt = best["P_u"]
-        y_fit = best["y_hat"]
-
-        # safe boundary snap (avoid saturation)
-        from scipy.special import expit as _expit
-        t0 = _expit(-P_u_opt(0.0))
-        if 1e-6 < t0 < 1.0 - 1e-6:
-            A_adj = (y_boundary_target - B0) / t0
-            A_cap = 100.0 * max(1e-12, ymax)
-            if np.isfinite(A_adj) and np.abs(A_adj) <= A_cap:
-                A_opt = float(A_adj)
-                y_fit = B0 + A_opt * _expit(-P_u_opt(z_region - x0))
-
-        enge = EngeModel(A=A_opt, P=P_u_opt, x0=x0, baseline=B0)
-        return enge, y_fit
-
-        # Helper: score for A (MSE + boundary penalty), using logistic
-        def _score_A(A: float):
-            P_u, deg_used = _fit_P_for_A(A)
-            if P_u is None:
-                return np.inf, None, None
-
-            t_all = expit(-P_u(z_region - x0))
-            y_hat_eff = A * t_all
-            y_hat = B0 + y_hat_eff
-
-            mse = float(np.mean((y_hat - b_region) ** 2))
-
-            # boundary penalty (value)
-            t0 = expit(-P_u(0.0))
-            yb_pred_eff = A * t0
-            score = mse + boundary_weight * (yb_pred_eff - yb_target_eff) ** 2
-            return score, P_u, y_hat
-
-        # Scan
-        for Ac in A_candidates:
-            score, P_u, y_hat = _score_A(Ac)
-            if np.isfinite(score) and (best is None or score < best["score"]):
-                best = dict(score=score, A=Ac, P_u=P_u, y_hat=y_hat)
-
-        if best is None:
-            enge = EngeModel(A=0.0, P=Polynomial([0.0]), x0=x0, baseline=B0)
-            return enge, B0 + np.zeros_like(b_region)
-
-        A_opt = float(best["A"])
-        P_u_opt = best["P_u"]
-        y_fit = best["y_hat"]
-
-        # Optional: safe boundary "snap" (avoid saturation)
-        t0 = expit(-P_u_opt(0.0))
-        if 1e-6 < t0 < 1.0 - 1e-6:
-            A_adj = yb_target_eff / t0
-            A_cap = 100.0 * max(1e-12, ymax)
-            if np.isfinite(A_adj) and np.abs(A_adj) <= A_cap:
-                A_opt = float(A_adj)
-                y_fit = B0 + A_opt * expit(-P_u_opt(z_region - x0))
-
-        enge = EngeModel(A=A_opt, P=P_u_opt, x0=x0, baseline=B0)
-        return enge, y_fit
-
-    def _fit_edges(self) -> None:
-        z = self.z_full
-        for c in self.COMPONENTS:
-            ch = self.fields[c]
-            i0, i1 = ch.borders_idx
-            z_left, b_left = z[:i0], ch.data[:i0]
-            z_right, b_right = z[i1:], ch.data[i1:]
-            z_mid = z[i0:i1]
-
-            engeL, fitL = self._fit_enge_side(z_left, b_left, z_mid, ch.sine, side="left", deg=self.enge_degree)
-            engeR, fitR = self._fit_enge_side(z_right, b_right, z_mid, ch.sine, side="right", deg=self.enge_degree)
-
-            ch.left, ch.right = engeL, engeR
-            ch.fit = np.zeros_like(ch.data, dtype=float)
-            if fitL.size: ch.fit[:i0] = fitL
-            if fitR.size: ch.fit[i1:] = fitR
-            ch.fit[i0:i1] = ch.sine.eval(z[i0:i1])
-
-    # ------------------------------ Merge & eval ------------------------------
-    def _merge_sections(self) -> None:
-        z = self.z_full
-        for c in self.COMPONENTS:
-            ch = self.fields[c]
-            i0, i1 = ch.borders_idx
-            mid_mask = (z >= z[i0]) & (z <= z[i1 - 1])
-            ch.fit[mid_mask] = ch.sine.eval(z[mid_mask])
-
-    def evaluate(self, zq: np.ndarray) -> Dict[str, np.ndarray]:
-        out = {}
-        for c in self.COMPONENTS:
-            ch = self.fields[c]
-            i0, i1 = ch.borders_idx
-            z0, z1 = self.z_full[i0], self.z_full[i1 - 1]
-            left_mask = zq < z0
-            mid_mask = (zq >= z0) & (zq <= z1)
-            right_mask = zq > z1
-            y = np.empty_like(zq, dtype=float)
-            y[left_mask]  = ch.left.eval(zq[left_mask])
-            y[mid_mask] = ch.sine.eval(zq[mid_mask])
-            y[right_mask] = ch.right.eval(zq[right_mask])
-            out[c] = y
-        return out
-
-    # ------------------------------ Primitives & plotting ------------------------------
-    def _compute_primitives(self) -> None:
-        z = self.z_full
-        for c in self.COMPONENTS:
-            if self.fields[c].data is not None:
-                self.primitives["data"][c] = sc.integrate.cumulative_trapezoid(self.fields[c].data, x=z, initial=0.0)
-            if self.fields[c].fit is not None:
-                self.primitives["fit"][c] = sc.integrate.cumulative_trapezoid(self.fields[c].fit, x=z, initial=0.0)
-
-    def plot_fields(self) -> None:
-        z = self.z_full
-        fig, axes = plt.subplots(4, sharex=True, figsize=(9, 9))
-        for name, ax in zip(self.COMPONENTS, axes[:3]):
-            ch = self.fields[name]
-            ax.plot(z, ch.data, label=f"{name} data")
-            ax.plot(z, ch.fit, label=f"{name} fit")
-            i0, i1 = ch.borders_idx
-            ax.axvline(z[i0], color="k", linestyle="--", linewidth=1)
-            ax.axvline(z[i1 - 1], color="k", linestyle="--", linewidth=1)
-            ax.set_ylabel(f"{name} [T]")
-            ax.grid(True)
-            ax.legend(loc="upper right")
-        # magnitude
-        data_map = {c: self.fields[c].data for c in self.COMPONENTS}
-        fit_map = {c: self.fields[c].fit for c in self.COMPONENTS}
-        axes[3].plot(z, self._mag(data_map), label="|B| data")
-        axes[3].plot(z, self._mag(fit_map), label="|B| fit")
-        axes[3].set_xlabel("s [m]")
-        axes[3].set_ylabel("|B| [T]")
-        axes[3].grid(True)
-        axes[3].legend(loc="upper right")
-        fig.suptitle(f"Magnetic Field at (X, Y) = {self.xy_point}")
-        plt.tight_layout()
         plt.show()
-
-    def plot_integral(self) -> None:
-        if any(self.primitives["data"][k] is None or self.primitives["fit"][k] is None for k in self.COMPONENTS):
-            self._compute_primitives()
-        z = self.z_full
-        fig, axes = plt.subplots(3, sharex=True, figsize=(9, 8))
-        for name, ax in zip(self.COMPONENTS, axes):
-            ax.plot(z, self.primitives["data"][name], label=fr"$\int {name}\,ds$ data")
-            ax.plot(z, self.primitives["fit"][name], label=fr"$\int {name}\,ds$ fit")
-            i0, i1 = self.fields[name].borders_idx
-            ax.axvline(z[i0], color="k", linestyle="--", linewidth=1)
-            ax.axvline(z[i1 - 1], color="k", linestyle="--", linewidth=1)
-            ax.set_ylabel(fr"$\int {name}\,ds$ [Tm]")
-            ax.grid(True)
-            ax.legend(loc="best")
-        axes[-1].set_xlabel("s [m]")
-        fig.suptitle(f"Cumulative integrals at (X, Y) = {self.xy_point}")
-        plt.tight_layout()
-        plt.show()
-
-    def plot_raw_fields(self, zlim=None, show_magnitude=False, channels=("Bx", "By", "Bz"), figsize=(9, 8)):
-        self._ensure("data")
-        to_plot = [(k, self.fields[k].data) for k in channels]
-        if show_magnitude:
-            data_map = {c: self.fields[c].data for c in self.COMPONENTS}
-            to_plot.append(("|B|", self._mag(data_map)))
-        nrows = len(to_plot)
-        fig, axes = plt.subplots(nrows, 1, sharex=True, figsize=figsize)
-        axes = [axes] if nrows == 1 else axes
-        z = self.z_full
-        for ax, (label, y) in zip(axes, to_plot):
-            ax.plot(z, y, label=f"{label} data")
-            ax.set_ylabel(f"{label} [T]" if label != "|B|" else "|B| [T]")
-            ax.grid(True)
-            ax.legend(loc="best")
-        if zlim is not None:
-            axes[-1].set_xlim(*zlim)
-        axes[-1].set_xlabel("s [m]")
-        fig.suptitle(f"Raw magnetic field at (X, Y) = {self.xy_point}")
-        fig.tight_layout()
-        return fig, axes
-
-    # ------------------------------ Parabolas & curvature ------------------------------
-    def fit_transverse_parabolas(self, *, enforce_even_x=True, enforce_even_y=True, dx=None, dy=None, region="mid",
-                                 center_xy: Tuple[int, int] = (0, 0)):
-        """Fit 3-point parabolas along x and y per z for Bx, By.
-        Evaluated at the transverse *center* `center_xy` (default (0,0)), not at `self.xy_point`.
-        Stores arrays aligned to z in self.parabola with NaNs outside the chosen region.
-        region: "mid" (default) fits only inside each channel's mid borders; "all" fits everywhere.
-        """
-        self._ensure("data", "borders")
-        if center_xy is None:
-            x0, y0 = self.xy_point
-        else:
-            x0, y0 = center_xy
-        dx = self.dx if dx is None else dx
-        dy = self.dy if dy is None else dy
-
-        def line(field, x=None, y=None):
-            ser = self.df.xs((x, y), level=["X", "Y"])[field].sort_index()
-            return ser.to_numpy()
-
-        # X-lines at fixed y0
-        Bx_xm, Bx_x0, Bx_xp = line("Bx", x=x0 - 1, y=y0), line("Bx", x=x0, y=y0), line("Bx", x=x0 + 1, y=y0)
-        By_xm, By_x0, By_xp = line("By", x=x0 - 1, y=y0), line("By", x=x0, y=y0), line("By", x=x0 + 1, y=y0)
-        # Y-lines at fixed x0
-        Bx_ym, Bx_y0, Bx_yp = line("Bx", x=x0, y=y0 - 1), line("Bx", x=x0, y=y0), line("Bx", x=x0, y=y0 + 1)
-        By_ym, By_y0, By_yp = line("By", x=x0, y=y0 - 1), line("By", x=x0, y=y0), line("By", x=x0, y=y0 + 1)
-        nZ = len(self.z_full)
-
-        def quad_coeffs(fm, f0, fp, d):
-            a = (fp - 2.0 * f0 + fm) / (2.0 * d * d)
-            b = (fp - fm) / (2.0 * d)
-            c = f0
-            return a, b, c
-
-        def alloc():
-            return (np.full(nZ, np.nan), np.full(nZ, np.nan), np.full(nZ, np.nan))
-
-        ax_Bx, bx_Bx, cx_Bx = alloc();
-        ax_By, bx_By, cx_By = alloc()
-        ay_Bx, by_Bx, cy_Bx = alloc();
-        ay_By, by_By, cy_By = alloc()
-        mid_mask_Bx, mid_mask_By = np.zeros(nZ, bool), np.zeros(nZ, bool)
-        i0x, i1x = self.fields["Bx"].borders_idx
-        i0y, i1y = self.fields["By"].borders_idx
-        if region == "mid":
-            mid_mask_Bx[i0x:i1x] = True
-            mid_mask_By[i0y:i1y] = True
-        elif region == "all":
-            mid_mask_Bx[:] = True;
-            mid_mask_By[:] = True
-        else:
-            raise ValueError('region must be "mid" or "all"')
-        ax_Bx[mid_mask_Bx], bx_Bx[mid_mask_Bx], cx_Bx[mid_mask_Bx] = quad_coeffs(Bx_xm[mid_mask_Bx],
-                                                                                 Bx_x0[mid_mask_Bx],
-                                                                                 Bx_xp[mid_mask_Bx], dx)
-        ax_By[mid_mask_Bx], bx_By[mid_mask_Bx], cx_By[mid_mask_Bx] = quad_coeffs(By_xm[mid_mask_Bx],
-                                                                                 By_x0[mid_mask_Bx],
-                                                                                 By_xp[mid_mask_Bx], dx)
-        ay_Bx[mid_mask_By], by_Bx[mid_mask_By], cy_Bx[mid_mask_By] = quad_coeffs(Bx_ym[mid_mask_By],
-                                                                                 Bx_y0[mid_mask_By],
-                                                                                 Bx_yp[mid_mask_By], dy)
-        ay_By[mid_mask_By], by_By[mid_mask_By], cy_By[mid_mask_By] = quad_coeffs(By_ym[mid_mask_By],
-                                                                                 By_y0[mid_mask_By],
-                                                                                 By_yp[mid_mask_By], dy)
-        if enforce_even_x:
-            bx_Bx[mid_mask_Bx] = 0.0;
-            bx_By[mid_mask_Bx] = 0.0
-        if enforce_even_y:
-            by_Bx[mid_mask_By] = 0.0;
-            by_By[mid_mask_By] = 0.0
-        self.parabola = {
-            "Bx": {"ax": ax_Bx, "bx": bx_Bx, "cx": cx_Bx, "ay": ay_Bx, "by": by_Bx, "cy": cy_Bx,
-                   "dBx_dx": bx_Bx, "d2Bx_dx2": 2.0 * ax_Bx, "dBx_dy": by_Bx, "d2Bx_dy2": 2.0 * ay_Bx,
-                   "_mask_x": mid_mask_Bx, "_mask_y": mid_mask_By},
-            "By": {"ax": ax_By, "bx": bx_By, "cx": cx_By, "ay": ay_By, "by": by_By, "cy": cy_By,
-                   "dBy_dx": bx_By, "d2By_dx2": 2.0 * ax_By, "dBy_dy": by_By, "d2By_dy2": 2.0 * ay_By,
-                   "_mask_x": mid_mask_Bx, "_mask_y": mid_mask_By},
-        }
-        return self.parabola
-
-    def plot_second_derivatives(self, fields=("Bx", "By"), directions=("x", "y"), smooth=None, **parabola_kwargs):
-        if self.parabola is None:
-            self.fit_transverse_parabolas(**parabola_kwargs)
-        z = self.z_full
-        curves, labels = [], []
-        for fld in fields:
-            if "x" in directions:
-                arr = self.parabola[fld][f"d2{fld}_dx2"]; curves.append(arr); labels.append(fr"$\partial^2 {fld}/\partial x^2$")
-            if "y" in directions:
-                arr = self.parabola[fld][f"d2{fld}_dy2"]; curves.append(arr); labels.append(fr"$\partial^2 {fld}/\partial y^2$")
-        if smooth is not None:
-            wlen, pord = smooth
-            for i, arr in enumerate(curves):
-                mask = np.isfinite(arr)
-                if mask.sum() >= max(wlen, pord + 2):
-                    tmp = arr.copy(); tmp[mask] = savgol_filter(arr[mask], wlen, pord); curves[i] = tmp
-        plt.figure(figsize=(9, 4))
-        for arr, lab in zip(curves, labels):
-            plt.plot(z, arr, label=lab)
-        plt.xlabel("s [m]")
-        plt.ylabel(r"$\partial^2 B/\partial(\cdot)^2$ [T/m$^2$]")
-        plt.grid(True)
-        plt.legend(loc="best")
-        plt.title(f"Transverse second derivatives at (X, Y) = {self.xy_point}")
-        plt.tight_layout(); plt.show()
-
-    def fit_second_derivative_sinusoids(self, axis: str = "x", fields=("Bx", "By"), n_modes: Optional[dict] = None, reuse_borders: bool = True, verbose: Optional[bool] = None, method: str = "locked"):
-        """Fit sinusoids to curvature traces d²(field)/d{axis}² vs s.
-
-        Parameters
-        ----------
-        axis : {"x","y"}
-            Which transverse curvature to use.
-        fields : iterable
-            Subset of {"Bx","By"}.
-        n_modes : dict|None
-            Per-field cap on number of modes. If None, uses self.n_modes[field].
-        reuse_borders : bool
-            Use each field's mid borders as the fit window.
-        method : {"locked","nonlinear","auto"}
-            - "locked" (default): reuse *frequencies* from the already-fitted field sine, and solve only
-              for amplitudes by linear least squares on cos(k z), sin(k z). No phase origin.
-            - "nonlinear": generic non-linear fit (old behavior, but returns no z0).
-            - "auto": try locked first, fall back to nonlinear.
-        """
-        if verbose is None:
-            verbose = self.verbose
-        self._ensure("data", "borders", "sines", "parabola")
-        z = self.z_full
-
-        def _window(curv, fld):
-            if reuse_borders:
-                i0, i1 = self.fields[fld].borders_idx
-            else:
-                k0, k1 = self.peak_window
-                i0 = max(1, k0); i1 = max(i0 + 2, min(k1, len(z) - 1))
-            z_seg, y_seg = z[i0:i1], curv[i0:i1]
-            m = np.isfinite(y_seg)
-            return z_seg[m], y_seg[m]
-
-        def _fit_locked(fld, z_used, y_used, nm_cap):
-            base = self.fields[fld].sine
-            if not base.is_ready() or base.k.size == 0:
-                raise RuntimeError("base sine not available for locked-mode fit")
-            k_list = np.array(base.k, float)
-            if nm_cap is not None and len(k_list) > nm_cap:
-                order = np.argsort(k_list)
-                k_list = k_list[order[:nm_cap]]
-            cols = []
-            for kk in k_list:
-                cols.append(np.cos(kk * z_used))
-                cols.append(np.sin(kk * z_used))
-            X = np.column_stack(cols)
-            coef, *_ = np.linalg.lstsq(X, y_used, rcond=None)
-            Acos = coef[0::2]; Asin = coef[1::2]
-            return SineModel(Acos=Acos, Asin=Asin, k=k_list)
-
-        def _fit_nonlinear(fld, z_used, y_used, nm_cap):
-            nm = nm_cap if nm_cap is not None else self.n_modes.get(fld)
-            return self._fit_sine_to_segment(y_used, z_used, nm)
-
-        for fld in fields:
-            curv = self.parabola[fld][f"d2{fld}_d{axis}2"]
-            z_used, y_used = _window(curv, fld)
-            if y_used.size < 3:
-                raise ValueError(f"Not enough finite curvature points to fit {fld} along {axis}.")
-            nm_cap = None if n_modes is None else n_modes.get(fld)
-            model = None
-            if method in ("locked", "auto"):
-                try:
-                    model = _fit_locked(fld, z_used, y_used, nm_cap)
-                except Exception:
-                    if method != "auto":
-                        raise
-            if model is None:
-                model = _fit_nonlinear(fld, z_used, y_used, nm_cap)
-            self.curv_sines[axis][fld] = model
-            if verbose:
-                print(f"[curv {axis}] {fld}: fitted {len(model.k)} modes (method={method})")
-        return self.curv_sines[axis]
-
-        def _fit_nonlinear(fld, z_used, y_used, nm_cap):
-            nm = nm_cap if nm_cap is not None else self.n_modes.get(fld)
-            return self._fit_sine_to_segment(y_used, z_used, nm)
-
-        for fld in fields:
-            # pick series
-            curv = self.parabola[fld][f"d2{fld}_d{axis}2"]
-            z_used, y_used = _window(curv, fld)
-            if y_used.size < 3:
-                raise ValueError(f"Not enough finite curvature points to fit {fld} along {axis}.")
-            nm_cap = None if n_modes is None else n_modes.get(fld)
-
-            model = None
-            if method in ("locked", "auto"):
-                try:
-                    model = _fit_locked(fld, z_used, y_used, nm_cap)
-                except Exception as e:
-                    if method == "auto":
-                        model = None
-                    else:
-                        raise
-            if model is None:  # nonlinear or auto fallback
-                model = _fit_nonlinear(fld, z_used, y_used, nm_cap)
-
-            self.curv_sines[axis][fld] = model
-            if verbose:
-                print(f"[curv {axis}] {fld}: fitted {len(model.k)} modes (method={method}); z0={model.z0:.6g}")
-        return self.curv_sines[axis]
-
-    def plot_second_derivative_fit(self, field: str = "Bx", axis: str = "x", show_series_string: bool = False, **series_kwargs):
-        if self.parabola is None:
-            self.fit_transverse_parabolas()
-        if field not in self.curv_sines.get(axis, {}):
-            self.fit_second_derivative_sinusoids(axis=axis, fields=(field,))
-        z = self.z_full
-        curv = self.parabola[field][f"d2{field}_d{axis}2"]
-        model = self.curv_sines[axis][field]
-        i0, i1 = self.fields[field].borders_idx
-        plt.figure(figsize=(9, 4))
-        plt.plot(z, curv, label=f"data: d²{field}/d{axis}²")
-        plt.plot(z, model.eval(z), label="sine fit")
-        plt.axvline(z[i0], color="k", linestyle="--", linewidth=1)
-        plt.axvline(z[i1 - 1], color="k", linestyle="--", linewidth=1)
-        plt.xlabel("s [m]")
-        plt.ylabel(r"T/m$^2$")
-        plt.grid(True)
-        plt.legend(loc="best")
-        plt.title(f"Curvature fit for {field} along {axis} at (X,Y)={self.xy_point}")
-        plt.tight_layout(); plt.show()
-        if show_series_string:
-            print(model.series_string(in_terms_of="s", **series_kwargs))
-
-    def curvature_series_string(self, field: str = "Bx", axis: str = "x", *, ensure_fit: bool = True, **fmt_kwargs) -> str:
-        if ensure_fit and (self.parabola is None or field not in self.curv_sines.get(axis, {})):
-            self.fit_second_derivative_sinusoids(axis=axis, fields=(field,))
-        return self.curv_sines[axis][field].series_string(**fmt_kwargs)
-
-    # ------------------------------ Export: Piecewise strings ------------------------------
-    def _fmt_num(self, x: float, fmt: str) -> str:
-        return format(float(x), fmt)
-
-    def _poly_to_string(self, poly: Polynomial, var: str = "s", coeff_fmt: str = ".12g", tol: float = 0.0) -> str:
-        coefs = poly.coef  # ascending powers
-        terms = []
-        for p, c in enumerate(coefs):
-            if abs(c) <= tol:
-                continue
-            cs = self._fmt_num(c, coeff_fmt)
-            if p == 0:
-                terms.append(f"{cs}")
-            elif p == 1:
-                terms.append(f"{cs}*{var}")
-            else:
-                terms.append(f"{cs}*{var}**{p}")
-        if not terms:
-            return "0"
-        expr = " + ".join(terms).replace("+ -", "- ")
-        return f"({expr})"
-
-    # ------------------------------ Results ------------------------------
-    def results(self) -> Dict[str, object]:
-        return {"z": self.z_full, **{c: self.fields[c] for c in self.COMPONENTS}, "primitives": self.primitives}

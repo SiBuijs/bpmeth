@@ -168,3 +168,9 @@ plt.xlabel("x")
 plt.ylabel("y")
 plt.legend()
 plt.show()
+
+
+
+# example
+c_u = np.array([c0, c1, c2, ...])                 # in u
+a_x = rescale_poly_coeffs(c_u, m, r)              # in x
