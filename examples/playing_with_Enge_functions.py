@@ -1,8 +1,12 @@
 import numpy as np
+import scipy as sp
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize_scalar
 import pandas as pd
 from scipy.signal import find_peaks
+from numpy.polynomial import Polynomial
+from sympy import preorder_traversal
+
 
 ########################################################################################################################
 # IMPORTING AND PREPARING THE DATA
@@ -100,77 +104,84 @@ by_regionright = by_values[yborderright:].copy()
 # FIT ENGES
 ########################################################################################################################
 
-x = zy_regionleft
-y = by_regionleft
+x = zy_regionright
+y = by_regionright
 
 x_min = np.min(x)
 x_max = np.max(x)
 y_min = np.min(y)
 y_max = np.max(y)
 
-x = 2 * (x - x_min) / (x_max - x_min) - 1  # scale to [-1,1]
+print(f"y_min = {y_min}, y_max = {y_max}")
 
 if y_min <= 0:
-    y -= y_min - 0.1
+    y_rescaled = y - y_min + 0.1  # Shift to positive values for fitting.
+
+
+# Convert to u in [-1, 1]
+c_u0 = -(x_min + x_max) / (x_max - x_min)
+c_u1 = 2 / (x_max - x_min)
+poly_u = Polynomial([c_u0, c_u1])
+u = poly_u(x)
 
 degree = 15  # degree of polynomial in exponent. 15 seems good fot one peak and one valley.
 
 # --- Helper functions ---
 def fit_polynomial(x, y, A, deg=2):
-    """
-    Given data (x,y) and a candidate A, transform y -> t, fit polynomial.
-    Returns Polynomial object (coefficients in ascending order).
-    """
-    if np.any(y <= 0) or np.any(y >= A):
-        return None  # invalid for log transform
-
     t = np.log(A / y - 1)  # transformed targets
-    coeffs = np.polyfit(x, t, deg)  # monomial basis
-    return np.poly1d(coeffs)
+    coeffs = Polynomial.fit(x, t, deg)  # monomial basis
+    return coeffs.convert(kind=Polynomial)  # convert to standard basis
 
 
-def enge_predict(x, poly, A):
+def enge_eval(x, poly, A):
     """Evaluate Enge function with fitted polynomial poly and scale A."""
-    return A / (1 + np.exp(poly(x)))
+    return A * sp.special.expit(-poly(x))
 
 
 def error_for_A(A, x, y, deg=2):
     """Compute squared error for a candidate A."""
     poly = fit_polynomial(x, y, A, deg=deg)
-    if poly is None:
-        return np.inf
-    y_hat = enge_predict(x, poly, A)
+    y_hat = enge_eval(x, poly, A)
     return np.sum((y - y_hat) ** 2)
 
-
 # --- Step 2: manual scan over A ---
-
-A_candidates = np.linspace(max(y) * 1.01, 10, 50)
-errors = [error_for_A(Ac, x, y, deg=degree) for Ac in A_candidates]
-
+A_candidates = np.linspace(max(y_rescaled) * 1.01, 2, 50)
+errors = [error_for_A(Ac, u, y_rescaled, deg=degree) for Ac in A_candidates]
 best_A_scan = A_candidates[np.argmin(errors)]
 print("Best A from scan:", best_A_scan)
 
+"""
 # --- Step 3: automatic optimization (bracket) ---
-result = minimize_scalar(error_for_A, bounds=(max(y) * 1.01, 10),
-                         args=(x, y, degree), method="bounded")
+result = minimize_scalar(error_for_A, bounds=(max(y_rescaled) * 1.01, 5),
+                         args=(u, y_rescaled, degree), method="bounded")
 best_A_opt = result.x
 print("Best A from optimizer:", best_A_opt)
+"""
 
 # --- Step 4: fit polynomial at best A ---
-poly_fit = fit_polynomial(x, y, best_A_opt, deg=degree)
-y_fit = enge_predict(x, poly_fit, best_A_opt)
+
+# Rescale back to original x
+poly_fit = fit_polynomial(u, y_rescaled, best_A_scan, deg=degree)
+y_fit = enge_eval(u, poly_fit, best_A_scan)
+
+# Rescale back to original x
+poly_x = poly_fit.convert(domain=[x_min, x_max])
+y_fit_rescaled = enge_eval(u, poly_x, best_A_scan)
+
+print("Poly_x coefficients:")
+print(poly_x.coef)
+
+print("Poly_u coefficients:")
+print(poly_fit.coef)
+
+if y_min <= 0:
+    y_fit += y_min - 0.1
+    y_fit_rescaled += y_min - 0.1
 
 # --- Plot ---
 plt.scatter(x, y, label="data", color="black")
-plt.plot(x, y_fit, label="fit", color="red")
+plt.plot(x, y_fit_rescaled, label="fit", color="red")
 plt.xlabel("x")
 plt.ylabel("y")
 plt.legend()
 plt.show()
-
-
-
-# example
-c_u = np.array([c0, c1, c2, ...])                 # in u
-a_x = rescale_poly_coeffs(c_u, m, r)              # in x
