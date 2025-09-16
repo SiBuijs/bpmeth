@@ -14,7 +14,7 @@ import scipy as sc
 from scipy.signal import find_peaks
 from scipy.optimize import curve_fit
 from scipy.special import expit
-from numpy.polynomial import Polynomial
+from numpy.polynomial import Polynomial, Chebyshev, Legendre
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, Tuple, Optional
 import matplotlib.pyplot as plt
@@ -33,15 +33,33 @@ class Wiggler:
         dy=0.001,
         ds=0.001,
         peak_window=(100, 2100),
+        data_cut=(None, None),
         n_modes=[3, 3, 3],
         enge_deg = [[15, 15], [15, 15], [15, 15]],
         der=False,
+        filter_params=None,
     ):
 
         self.file_path = file_path
         self.xy_point = xy_point
         self.dx, self.dy, self.ds = dx, dy, ds
         self.peak_window = peak_window
+        self.data_cut = data_cut
+
+        # NOTE: Filter noise is now only used for the right tails, because those are noisy.
+        # We can add a more general functionality later.
+        self.filter_params = filter_params
+
+        # data_cut can be used to remove a part of the tail.
+        # Mainly used if the data is noisy close to the tails.
+        if data_cut != (None, None):
+            if data_cut[0] != None and data_cut[1] == None:
+                self.peak_window = (peak_window[0]-data_cut[0], peak_window[1])
+            if data_cut[1] != None and data_cut[0] == None:
+                self.peak_window = (peak_window[0], peak_window[1]+data_cut[1])
+            if data_cut[0] != None and data_cut[1] != None:
+                self.peak_window = (peak_window[0]-data_cut[0], peak_window[1]+data_cut[1])
+
 
         self.shapes = {
             "Bx": {"n_modes": n_modes[0], "enge_deg_L": enge_deg[0][0], "enge_deg_R": enge_deg[0][1]},
@@ -75,6 +93,8 @@ class Wiggler:
     def set(self):
         self._parse_to_dataframe()
         self.select_xy()
+        if self.filter_params != None:
+            self._filter_noise()
         self._find_regions()
         self._fit_sinusoids()
         self._fit_enge()
@@ -136,17 +156,37 @@ class Wiggler:
     def select_xy(self):
         subset = self.df.xs(self.xy_point, level=["X", "Y"]).sort_index()
 
-        # Sets the horizontal axis and scales it to meters.
-        self.s_full = subset.index.to_numpy() * self.ds
+        self.s_full = subset.index.to_numpy()[self.data_cut[0]:self.data_cut[1]] * self.ds
 
         # Store the raw data for each field.
 
         for field in ["Bx", "By", "Bs"]:
             if self.der == False:
-                self.raw_data[field] = subset[field].to_numpy()
+                self.raw_data[field] = subset[field].to_numpy()[self.data_cut[0]:self.data_cut[1]]
+
             else:
                 self._fit_transverse_parabolas()
+
             self.fit_data[field] = np.zeros_like(self.raw_data[field])
+
+    @staticmethod
+    def find_sign_change_indices(y, eps=0.0):
+        """
+        Indices i where y[i] and y[i+1] have opposite signs.
+        Exact zeros are not counted as crossings.
+
+        eps > 0 treats |y| <= eps as 0 to add a small hysteresis.
+        """
+        y = np.asarray(y, float)
+        if eps > 0:
+            y = np.where(np.abs(y) <= eps, 0.0, y)
+
+        y0 = y[:-1]
+        y1 = y[1:]
+
+        valid = ~np.isnan(y0) & ~np.isnan(y1)
+        crossings = valid & (y0 * y1 < 0)  # strict sign change
+        return np.flatnonzero(crossings)
 
     # PRIVATE
     # This method first finds the peaks and valleys in the data for Bx and By
@@ -156,13 +196,64 @@ class Wiggler:
         w_left = self.peak_window[0]
         w_right = self.peak_window[1]
 
-        for field in ["Bx", "By", "Bs"]:
-            field_peaks = find_peaks(self.raw_data[field])[0]
-            field_valleys = find_peaks(-self.raw_data[field])[0]
+        # For Bx, it was found that finding the peaks and valleys works best.
+        field_peaks = find_peaks(self.raw_data["Bx"])[0]
+        field_valleys = find_peaks(-self.raw_data["Bx"])[0]
+        field_peaks = field_peaks[np.logical_and(field_peaks > w_left, field_peaks < w_right)]
+        field_valleys = field_valleys[np.logical_and(field_valleys > w_left, field_valleys < w_right)]
+        field_extrema = np.sort(np.concatenate((field_peaks, field_valleys)))
+        self.borders_idx["Bx"] = [field_extrema[1], field_extrema[-2]]
+
+        # For By, it was found that finding the zero-crossings works best.
+        if not self.der:
+            field_zeros = self.find_sign_change_indices(self.raw_data["By"], eps=0.0)
+            field_zeros = field_zeros[np.logical_and(field_zeros > w_left, field_zeros < w_right)]
+            self.borders_idx["By"] = [field_zeros[1], field_zeros[-2]]
+
+        else:
+            field_peaks = find_peaks(self.raw_data["By"])[0]
+            field_valleys = find_peaks(-self.raw_data["By"])[0]
             field_peaks = field_peaks[np.logical_and(field_peaks > w_left, field_peaks < w_right)]
             field_valleys = field_valleys[np.logical_and(field_valleys > w_left, field_valleys < w_right)]
             field_extrema = np.sort(np.concatenate((field_peaks, field_valleys)))
-            self.borders_idx[field] = [field_extrema[1], field_extrema[-2]]
+            self.borders_idx["By"] = [field_extrema[1], field_extrema[-5]]
+
+        # Temporary workaround: Bs borders are set to the same as Bx borders.
+        self.borders_idx["Bs"] = (self.borders_idx["By"][0], self.borders_idx["By"][1])
+
+    # PRIVATE
+    # This is an impromptu noise-filter.
+    # Will probably need to be improved later.
+    # For now, it only filters noise from the right tail of the data, because that's where the noise is present.
+    def _filter_noise(self):
+        from scipy.signal import savgol_filter
+        from scipy.signal import medfilt
+
+        left_idx = self.filter_params[0]
+        right_idx = self.filter_params[1]
+        kernel_size = self.filter_params[2]
+        window_length = self.filter_params[3]
+        polyorder = self.filter_params[4]
+
+        for field in ["Bx", "By", "Bs"]:
+
+            # Because Bs is very noisy, we also filter the left tail.
+            # This is not necessary for Bx and By, because their left tails are not noisy.
+            if field == "Bs":
+                tail = slice(None, left_idx)
+                m = medfilt(self.raw_data[field][tail].copy(), kernel_size=kernel_size)
+                y_sm = savgol_filter(m, window_length=window_length, polyorder=polyorder)
+                self.raw_data[field][tail] = y_sm
+
+                tail = slice(right_idx, None)
+                m = medfilt(self.raw_data[field][tail].copy(), kernel_size=kernel_size)  # kernel_size must be odd
+                y_sm = savgol_filter(m, window_length=window_length, polyorder=polyorder)
+                self.raw_data[field][tail] = y_sm
+
+            tail = slice(right_idx, None)
+            m = medfilt(self.raw_data[field][tail].copy(), kernel_size=kernel_size)  # kernel_size must be odd
+            y_sm = savgol_filter(m, window_length=window_length, polyorder=polyorder)
+            self.raw_data[field][tail] = y_sm
 
 
 
@@ -205,12 +296,12 @@ class Wiggler:
     def _fit_sinusoids(self, fun=True):
         for field in ["Bx", "By", "Bs"]:
             idx = self.borders_idx[field]
-            s_reg = self.s_full[idx[0]:idx[1]]
+            s_reg = self.s_full[idx[0]:idx[1]+1]
 
             if fun:
-                field_reg = self.raw_data[field][idx[0]:idx[1]]
+                field_reg = self.raw_data[field][idx[0]:idx[1]+1]
             else:
-                field_reg = self.trans_der2[field][idx[0]:idx[1]]
+                field_reg = self.trans_der2[field][idx[0]:idx[1]+1]
 
             n_modes = self.shapes[field]["n_modes"]
 
@@ -227,10 +318,10 @@ class Wiggler:
 
             if fun:
                 self.fit_pars[field]["sines"] = popt
-                self.fit_data[field][idx[0]:idx[1]] = self._sinusoid(s_reg, *popt)
+                self.fit_data[field][idx[0]:idx[1]+1] = self._sinusoid(s_reg, *popt)
             else:
                 self.der2_fit_pars[field]["sines"] = popt
-                self.fit_der2[field][idx[0]:idx[1]] = self._sinusoid(s_reg, *popt)
+                self.fit_der2[field][idx[0]:idx[1]+1] = self._sinusoid(s_reg, *popt)
 
 
 
@@ -277,8 +368,19 @@ class Wiggler:
         coeffs = Polynomial.fit(x, t, deg)  # monomial basis
         return coeffs.convert(kind=Polynomial)  # convert to standard basis
 
-    def _error_for_A(self, A, x, y, deg=15):
+    # PRIVATE
+    # This method computes the error for a given A value.
+    # It first calculates an array of y, named yhat.
+    # Then, it rescales A such that yhat matches y0, which is derived from the sinusoid fit.
+    # Then, it recomputes yhat with the rescaled A.
+    # This should return a fit that matches the y-value of the sinusoid fit at the border.
+    def _error_for_A(self, A, x, y, y0, enge_side, deg=15):
         poly = self._fit_polynomial(x, y, A, deg=deg)
+        y_hat = self._enge_function(x, poly, A)
+        if enge_side == "enge_deg_L":
+            A *= y0 / y_hat[-1]
+        elif enge_side == "enge_deg_R":
+            A *= y0 / y_hat[0]
         y_hat = self._enge_function(x, poly, A)
         return np.sum((y - y_hat) ** 2)
 
@@ -292,7 +394,7 @@ class Wiggler:
     # TODO: Note that now, we have four polynomials of order ~20, instead of ~20 polynomials of order 3.
     # TODO: So this is a good improvement, I'd say.
     def _fit_enge(self, fun=True):
-            for field in ["Bx", "By"]:
+            for field in ["Bx", "By", "Bs"]:
                 for enge_side, idx_pos in zip(["enge_deg_L", "enge_deg_R"], [0, 1]):
                     idx = self.borders_idx[field]
                     if enge_side == "enge_deg_L":
@@ -305,15 +407,16 @@ class Wiggler:
 
                     s_min, s_max, u, poly_u = self._rescale_x_for_enge(s_reg)
                     y_rescaled = self._rescale_y_for_enge(field_reg)
+                    y_match    = self._rescale_y_for_enge(self.fit_data[field][idx_pos])
 
-                    A_candidates = np.linspace(max(y_rescaled) * 1.01, max(y_rescaled)*3, 50)
-                    errors = [self._error_for_A(Ac, u, y_rescaled, deg=self.shapes[field][enge_side]) for Ac in A_candidates]
+                    A_candidates = np.linspace(max(y_rescaled) * 1.01, max(y_rescaled)*3, 100)
+                    errors = [self._error_for_A(Ac, u, y_rescaled, deg=self.shapes[field][enge_side], y0=y_match, enge_side=enge_side) for Ac in A_candidates]
                     best_A_scan = A_candidates[np.argmin(errors)]
 
                     poly_fit = self._fit_polynomial(u, y_rescaled, best_A_scan, deg=self.shapes[field][enge_side])
                     y_fit = self._enge_function(u, poly_fit, best_A_scan)
 
-                    poly_x = poly_fit.convert(domain=[s_min, s_max])
+                    poly_x = poly_fit.convert(domain=[s_min, s_max], kind=Polynomial)
                     y_fit_rescaled = self._enge_function(u, poly_x, best_A_scan)
 
                     if b_min <= 0:
@@ -321,10 +424,10 @@ class Wiggler:
                         y_fit_rescaled += b_min - 0.1
 
                     if enge_side == "enge_deg_L":
-                        self.fit_data[field][:idx[0]] = y_fit_rescaled
+                        self.fit_data[field][:idx[0]] =y_fit_rescaled
                         self.fit_pars[field]["enge_L"] = [best_A_scan] + list(poly_x.coef)
                     else:
-                        self.fit_data[field][idx[1]:] = y_fit_rescaled
+                        self.fit_data[field][idx[1]:] =y_fit_rescaled
                         self.fit_pars[field]["enge_R"] = [best_A_scan] + list(poly_x.coef)
 
 
@@ -332,6 +435,11 @@ class Wiggler:
     ####################################################################################################################
     # TRANSVERSE GRADIENTS
     ####################################################################################################################
+
+    # PRIVATE
+    # This method extracts the data at (x,y) = (-1,0), (0,0), (1,0) and fits parabolas to these points.
+    # This is done because bpmeth needs the derivatives w.r.t. x at each point.
+    # The first derivatives are zero, but can be extracted nevertheless.
     def _fit_transverse_parabolas(self):
         subsetm10 = self.df.xs((-1, 0), level=["X", "Y"]).sort_index()
         subset00  = self.df.xs(( 0, 0), level=["X", "Y"]).sort_index()
@@ -340,10 +448,17 @@ class Wiggler:
         parabolas = {"Bx": None, "By": None, "Bs": None}
 
         for field in ["Bx", "By", "Bs"]:
-            x = [-1, 0, 1]
-            fieldm10 = subsetm10[field].to_numpy()
-            field00  = subset00[field].to_numpy()
-            fieldp10 = subsetp10[field].to_numpy()
+            x = [-self.dx, 0, self.dx]
+
+            if self.data_cut is None:
+                fieldm10 = subsetm10[field].to_numpy()
+                field00  = subset00[field].to_numpy()
+                fieldp10 = subsetp10[field].to_numpy()
+
+            else:
+                fieldm10 = subsetm10[field].to_numpy()[self.data_cut[0]:self.data_cut[1]]
+                field00  = subset00[field].to_numpy()[self.data_cut[0]:self.data_cut[1]]
+                fieldp10 = subsetp10[field].to_numpy()[self.data_cut[0]:self.data_cut[1]]
 
             for ii in range(len(field00)):
                 if parabolas[field] is None:
@@ -355,6 +470,66 @@ class Wiggler:
             self.raw_data[field] = 2 * parabolas[field][:, 0]
 
 
+    ####################################################################################################################
+    # STRINGS FOR BPMETH
+    ####################################################################################################################
+
+    @staticmethod
+    def _poly_str(coeffs):
+        terms = []
+        for i, a in enumerate(coeffs):
+            if i == 0:
+                terms.append(f"({a})")
+            elif i == 1:
+                terms.append(f"({a})*s")
+            else:
+                terms.append(f"({a})*s**{i}")
+        return " + ".join(terms) if terms else "0"
+
+    def _enge_str(self, enge_pars, style="python"):
+        """enge_pars = [A, a0, a1, ..., aN]; Enge(s) = A * expit(-P_N(s)) = A/(1+exp(P_N(s)))."""
+
+        # Extract Enge parameters from self.fit_pars
+
+        A, *poly = enge_pars
+        P = self._poly_str(poly)
+        return f"({A})/(1+exp(({P})))"
+
+    @staticmethod
+    def _sines_str(sine_pars):
+        """
+        sine_pars laid out as [A_cos1, A_sin1, k1, A_cos2, A_sin2, k2, ...].
+        Returns sum_i (A_cosi*cos(k_i*s) + A_sini*sin(k_i*s)).
+        """
+
+        terms = []
+        for i in range(0, len(sine_pars), 3):
+            Aci, Asi, ki = sine_pars[i:i + 3]
+            terms.append(f"({Aci})*cos(({ki})*s) + ({Asi})*sin(({ki})*s)")
+        return " + ".join(terms)
+
+    def export_piecewise_string(self, component="Bx"):
+        """
+        Build a piecewise function string for one component ('Bx'|'By'|'Bs').
+
+        style:
+          - 'python' -> returns: 'lambda s: ...' using numpy (np.exp/np.sin/np.cos)
+          - 'sympy'  -> returns: 'Piecewise((.., cond1), (.., cond2), (.., True))'
+        """
+
+        pars = self.fit_pars[component]
+        enge_L = self._enge_str(pars["enge_L"])
+        sines = self._sines_str(pars["sines"])
+        enge_R = self._enge_str(pars["enge_R"])
+
+        sL = self.s_full[self.borders_idx[component][0]]
+        sR = self.s_full[self.borders_idx[component][1]]
+
+        # Piecewise((expr, condition), (expr, condition), (expr, True))
+        cond1 = f"s < ({sL})"
+        cond2 = f"(s >= ({sL})) & (s <= ({sR}))"
+
+        return f"Piecewise(( {enge_L}, {cond1} ), ( {sines}, {cond2} ), ( {enge_R}, True ))"
 
     ####################################################################################################################
     # PLOTTING
@@ -376,18 +551,27 @@ class Wiggler:
         ax1.axvline(x=self.s_full[self.borders_idx["Bx"][1]], color='k', linestyle='--', linewidth=1)
         ax2.axvline(x=self.s_full[self.borders_idx["By"][0]], color='k', linestyle='--', linewidth=1)
         ax2.axvline(x=self.s_full[self.borders_idx["By"][1]], color='k', linestyle='--', linewidth=1)
+        ax3.axvline(x=self.s_full[self.borders_idx["Bs"][0]], color='k', linestyle='--', linewidth=1)
+        ax3.axvline(x=self.s_full[self.borders_idx["Bs"][1]], color='k', linestyle='--', linewidth=1)
 
-        # Label the graphs.
+        if self.der:
+            x_label = r"$\frac{d^2 B_x}{d x^2}$"
+            y_label = r"$\frac{d^2 B_y}{d y^2}$"
+            s_label = r"$\frac{d^2 B_s}{d x^2}$"
+        else:
+            x_label = r"$B_x$"
+            y_label = r"$B_y$"
+            s_label = r"$B_s$"
+
         ax1.set_title(f"Magnetic Field at (X, Y) = {self.xy_point}")
-        ax2.set_xlabel("Longitudinal Position, $s$, [m]")
-        ax1.set_ylabel("Horizontal Field, $B_x$, [T]")
-        ax2.set_ylabel("Vertical Field, $B_y$, [T]")
-        ax3.set_ylabel("Longitudinal Field, $B_s$, [T]")
+        ax1.set_ylabel(f"Horizontal Field, {x_label} [T]")
+        ax2.set_ylabel(f"Vertical Field, {y_label} [T]")
+        ax3.set_ylabel(f"Longitudinal Field, {s_label} [T]")
+        ax3.set_xlabel(r"Longitudinal Position, $s$ [m]")
 
-        # Make a legend.
-        ax1.legend(["$B_x$ Data", "$B_x$ Fit"], loc="lower right")
-        ax2.legend(["$B_y$ Data", "$B_y$ Fit"], loc="lower right")
-        ax3.legend(["$B_s$ Data", "$B_s$ Fit"], loc="upper right")
+        ax1.legend([f"{x_label} Data", f"{x_label} Fit"], loc="lower right")
+        ax2.legend([f"{y_label} Data", f"{y_label} Fit"], loc="lower right")
+        ax3.legend([f"{s_label} Data", f"{s_label} Fit"], loc="upper right")
 
         # Turn on the grids.
         ax1.grid()
