@@ -43,6 +43,7 @@ Test_Wiggler = Wiggler(file_path='example_data/knot_map_test.txt',
 
 Test_Wiggler.set()
 #Test_Wiggler.plot_fields()
+
 print("DERIVATIVES:")
 Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
                            xy_point=(0, 0),
@@ -88,14 +89,12 @@ print(f"Bx der string: {a3}")
 print(f"By der string: {b3}")
 
 curv=0
-prrr
+
 wiggler = bp.GeneralVectorPotential(hs=f"{curv}",a=(f"{a1}", f"{a2}", f"{a3}"),b=(f"{b1}", f"{b2}", f"{b3}"), bs=f"{bs}")
 
 # NOTE: Investigate how bpmeth makes these functions, there might be something that causes discrepancies.
 Bxfun, Byfun, Bsfun = wiggler.get_Bfield()
 
-leftidx = Test_Wiggler.borders_idx["Bx"][0]
-rightidx = Test_Wiggler.borders_idx["Bx"][1]
 
 # ----------------------------------------------------------------------------------------------------------------------
 # Show a comparison of the fitted field and the original field at (0, 0).
@@ -110,8 +109,7 @@ Bz00 = Test_Wiggler.raw_data["Bs"]
 
 Z  = Test_Wiggler.s_full
 
-# NOTE: The offsets are: -0.007 for x, and 0.02 for y.
-# NOTE: Bs is way off.
+
 
 fig1, (ax1, ax2, ax3) = plt.subplots(3, figsize=(10, 4), constrained_layout=True)
 ax1.plot(Z, Bx00, label=f"Bx Data  ({xoffset}, {yoffset})")
@@ -132,7 +130,7 @@ ax3.grid()
 # ----------------------------------------------------------------------------------------------------------------------
 # Show a comparison of the fitted field and the original field at (1, 1).
 xoffset = 1.0
-yoffset = 0.0
+yoffset = 1.0
 
 Test_Wiggler.xy_point = (xoffset, yoffset)
 Test_Wiggler.select_xy()
@@ -155,7 +153,7 @@ plt.show()
 
 # ----------------------------------------------------------------------------------------------------------------------
 # Show a comparison of the fitted field and the original field at (1, 0).
-
+prrr
 fig2, (ax4, ax5, ax6) = plt.subplots(3, figsize=(10, 4), constrained_layout=True)
 ax4.plot(Z, Bx10 - Bx00, label=f"Bx Data  ({xoffset}, {yoffset})")
 ax4.plot(Z, Bxfun(dz, 0, Z) - Bxfun(0, 0, Z), label=f"Bx bpmeth  ({xoffset}, {yoffset})", linestyle='dashed')

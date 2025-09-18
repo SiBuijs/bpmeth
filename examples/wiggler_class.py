@@ -530,19 +530,15 @@ class Wiggler:
 
     def export_piecewise_string(self, component: str, sig=12, tol=1e-14):
         """
-        Compact NumPy expression for GeneralVectorPotential.
+        SymPy-friendly export for GeneralVectorPotential.
 
-        - Uses np.polyval on u(s)=c0+c1*s for the Enge tails (stable, minimal nesting).
-        - Uses a two-level np.where for the piecewise split.
-        - Formats numbers with `sig` significant digits and prunes tiny trailing coeffs.
+        - Piecewise(...) with exp(...)
+        - Exponent = sum_k a_k * u(s)^k, with u(s) from the *same* mapping used at fit time.
         """
         pars = self.fit_pars[component]
-
-        # --- tiny inline utils (to avoid separate helpers) ---
         fmt = lambda x: f"{float(x):.{sig}g}"
 
         def prune(coeffs):
-            # drop tiny trailing coeffs (highest degree end for polyval)
             import numpy as _np
             c = _np.asarray(coeffs, float)
             i = len(c) - 1
@@ -550,43 +546,46 @@ class Wiggler:
                 i -= 1
             return c[:i + 1].tolist()
 
-        # borders (adjust to however you store them)
-        sL = fmt(self.s_full[self.borders_idx[component][0]])  # left boundary of middle region
-        sR = fmt(self.s_full[self.borders_idx[component][1]])  # right boundary of middle region
+        def poly_sum_u(coeffs_u, c0, c1, s_symbol="s"):
+            coeffs_u = prune(coeffs_u)  # ascending [a0, a1, ..., aN]
+            u = f"(({fmt(c0)}) + ({fmt(c1)})*{s_symbol})"
+            if not coeffs_u:
+                return "0"
+            terms = []
+            for k, ak in enumerate(coeffs_u):
+                aks = fmt(ak)
+                if k == 0:
+                    terms.append(f"({aks})")
+                elif k == 1:
+                    terms.append(f"({aks})*{u}")
+                else:
+                    terms.append(f"({aks})*{u}**{k}")
+            return " + ".join(terms)
 
-        # --- Left Enge: A/(1+exp(polyval(a[::-1], u))) with u = c0 + c1*s
-        A_L, *au_L = pars["enge_L"]  # coeffs are in u, ascending degree
-        c0L, c1L = pars["enge_L_u_map"]
-        au_L_hi = list(reversed(prune(au_L)))  # np.polyval wants highest-first
-        enge_L = (
-            f"({fmt(A_L)})/(1+np.exp("
-            f"np.polyval(np.array([{','.join(fmt(c) for c in au_L_hi)}]), "
-            f"({fmt(c0L)}+{fmt(c1L)}*s)"
-            f")))"
-        )
+        # piecewise borders
+        idxL, idxR = self.borders_idx[component]
+        sL = float(self.s_full[idxL])
+        sR = float(self.s_full[idxR])
 
-        # --- Middle: your sinusoid; make sure it uses np.*, not math/sympy
-        # Example placeholder; replace with your actual parameterization:
-        # sines = f"({fmt(C0)} + {fmt(A0)}*np.sin({fmt(k0)}*s + {fmt(phi0)}))"
-        sines = self._sines_str(pars["sines"])  # if you already have a NumPy version
-        # If not, inline-build it here similarly (using np.sin/np.cos).
+        # LEFT tail
+        y0_L, A_L, *au_L = pars["enge_L"]
+        c0L, c1L = pars.get("enge_L_u_map", (0.0, 1.0))
+        P_L = poly_sum_u(au_L, c0L, c1L)
+        enge_L = f"({fmt(y0_L)}) + ({fmt(A_L)})/(1+exp(({P_L})))"
 
-        # --- Right Enge (same pattern)
-        A_R, *au_R = pars["enge_R"]
-        c0R, c1R = pars["enge_R_u_map"]
-        au_R_hi = list(reversed(prune(au_R)))
-        enge_R = (
-            f"({fmt(A_R)})/(1+np.exp("
-            f"np.polyval(np.array([{','.join(fmt(c) for c in au_R_hi)}]), "
-            f"({fmt(c0R)}+{fmt(c1R)}*s)"
-            f")))"
-        )
+        # center (sines)
+        sines = self._sines_str(pars["sines"])
 
-        # --- Piecewise via np.where (fast to parse and compile)
-        # Region order: left (s < sL) -> middle (s <= sR) -> right
+        # RIGHT tail
+        y0_R, A_R, *au_R = pars["enge_R"]
+        c0R, c1R = pars.get("enge_R_u_map", (0.0, 1.0))
+        P_R = poly_sum_u(au_R, c0R, c1R)
+        enge_R = f"({fmt(y0_R)}) + ({fmt(A_R)})/(1+exp(({P_R})))"
+
         return (
-            f"(np.where((s < {sL}), {enge_L}, "
-            f"np.where((s <= {sR}), {sines}, {enge_R})))"
+            f"Piecewise(( {enge_L}, s < {fmt(sL)} ), "
+            f"( {sines}, (s <= {fmt(sR)}) ), "
+            f"( {enge_R}, True ))"
         )
 
     ####################################################################################################################
