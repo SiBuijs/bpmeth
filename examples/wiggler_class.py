@@ -358,15 +358,37 @@ class Wiggler:
         y_min = np.min(y)
 
         if y_min <= 0:
-            y = y - y_min + 0.1
+            y = y - y_min*1.05 + 0.1
 
         return y
 
-    @staticmethod
-    def _fit_polynomial(x, y, A, deg=15):
-        t = np.log(A / y - 1)  # transformed targets
-        coeffs = Polynomial.fit(x, t, deg)  # monomial basis
-        return coeffs.convert(kind=Polynomial)  # convert to standard basis
+    from numpy.polynomial import Polynomial
+    import numpy as np
+
+    def _fit_polynomial(self, u, y_pos, A, deg):
+        """
+        Fit P(u) in monomial basis on u∈[-1,1] without covariance.
+        Uses Polynomial.fit (no cov_x path), safe logit & finite masking.
+        """
+        t = self._safe_logit(y_pos, A)
+        m = np.isfinite(u) & np.isfinite(t)
+        u_m, t_m = u[m], t[m]
+        if u_m.size == 0:
+            return Polynomial([0.0]).convert(domain=[-1, 1], window=[-1, 1])
+
+        deg_eff = int(min(deg, max(0, u_m.size - 1)))
+        poly_u = Polynomial.fit(u_m, t_m, deg=deg_eff, domain=[-1, 1], window=[-1, 1])
+        return poly_u.convert(kind=Polynomial, domain=[-1, 1], window=[-1, 1])
+
+    def _safe_logit(self, y_pos, A):
+        """
+        Numerically safe log(A/y - 1). Assumes y_pos has already been shifted positive.
+        Clips to keep values strictly inside (0, A).
+        """
+        import numpy as np
+        eps = np.finfo(float).eps
+        y = np.clip(y_pos, eps, A * (1.0 - 1e-8))
+        return np.log(A / y - 1.0)
 
     # PRIVATE
     # This method computes the error for a given A value.
@@ -393,44 +415,98 @@ class Wiggler:
     # TODO: That's similar to what we did before with the number of slices in the polynomial chain.
     # TODO: Note that now, we have four polynomials of order ~20, instead of ~20 polynomials of order 3.
     # TODO: So this is a good improvement, I'd say.
+
+    def _horner_in_affine_var_str(self, coeffs, c0, c1, s_symbol="s"):
+        """
+        Build a numerically stable Horner-form string for P(u) with u = c0 + c1*s.
+        coeffs = [a0, a1, ..., aN]   (monomial coefficients in u)
+        Returns: (((aN)*u + a{N-1})*u + ... ) + a0   with u expanded inline.
+        """
+        u_expr = f"(({c0}) + ({c1})*{s_symbol})"
+        if not coeffs:
+            return "0"
+        acc = f"({coeffs[-1]})"
+        for a in reversed(coeffs[:-1]):
+            acc = f"(({acc})*{u_expr} + ({a}))"
+        return acc
+
+    def _enge_str_u(self, A_and_coeffs, c0, c1, s_symbol="s"):
+        """
+        Enge string using a polynomial in u(s):  A/(1 + exp(P(u(s))))
+        A_and_coeffs = [A, a0, a1, ..., aN]   (coeffs in u, not in s)
+        """
+        A, *coeffs_u = A_and_coeffs
+        P = self._horner_in_affine_var_str(coeffs_u, c0, c1, s_symbol=s_symbol)
+        return f"({A})/(1+exp(({P})))"
+
     def _fit_enge(self, fun=True):
-            for field in ["Bx", "By", "Bs"]:
-                for enge_side, idx_pos in zip(["enge_deg_L", "enge_deg_R"], [0, 1]):
-                    idx = self.borders_idx[field]
-                    if enge_side == "enge_deg_L":
-                        s_reg = self.s_full[:idx[0]]
-                        field_reg = self.raw_data[field][:idx[0]]
-                    else:
-                        s_reg = self.s_full[idx[1]:]
-                        field_reg = self.raw_data[field][idx[1]:]
-                    b_min = np.min(field_reg)
+        """
+        Fit Enge tails (left/right) for Bx/By/Bs.
 
-                    s_min, s_max, u, poly_u = self._rescale_x_for_enge(s_reg)
-                    y_rescaled = self._rescale_y_for_enge(field_reg)
-                    y_match    = self._rescale_y_for_enge(self.fit_data[field][idx_pos])
+        Key points:
+        - Fit and evaluate in the scaled coordinate u ∈ [-1,1] (stable).
+        - Match the border value using a *consistent* positivity shift for both the tail
+          and the border sample.
+        - Store the fitted polynomial *in u* plus the affine map u(s) = c0 + c1*s, so that
+          export can evaluate P(u(s)) in Horner form (no expansion in s).
+        """
+        for field in ["Bx", "By", "Bs"]:
+            idxL, idxR = self.borders_idx[field]
 
-                    A_candidates = np.linspace(max(y_rescaled) * 1.01, max(y_rescaled)*3, 100)
-                    errors = [self._error_for_A(Ac, u, y_rescaled, deg=self.shapes[field][enge_side], y0=y_match, enge_side=enge_side) for Ac in A_candidates]
-                    best_A_scan = A_candidates[np.argmin(errors)]
+            for enge_side in ["enge_deg_L", "enge_deg_R"]:
+                if enge_side == "enge_deg_L":
+                    # include the border sample (helps the A re-match)
+                    s_reg = self.s_full[:idxL + 1]
+                    field_reg = self.raw_data[field][:idxL + 1]
+                    border_ix = idxL
+                else:
+                    s_reg = self.s_full[idxR:]
+                    field_reg = self.raw_data[field][idxR:]
+                    border_ix = idxR
 
-                    poly_fit = self._fit_polynomial(u, y_rescaled, best_A_scan, deg=self.shapes[field][enge_side])
-                    y_fit = self._enge_function(u, poly_fit, best_A_scan)
+                if s_reg.size == 0:
+                    continue
 
-                    poly_x = poly_fit.convert(domain=[s_min, s_max], kind=Polynomial)
-                    y_fit_rescaled = self._enge_function(u, poly_x, best_A_scan)
+                # --- positivity shift used consistently for tail *and* border ---
+                b_min = float(np.min(field_reg))
+                shift = (-b_min + 0.1) if (b_min <= 0) else 0.0
+                y_tail = field_reg + shift
+                y0 = float(self.fit_data[field][border_ix]) + shift
 
-                    if b_min <= 0:
-                        y_fit += b_min - 0.1
-                        y_fit_rescaled += b_min - 0.1
+                # --- x -> u in [-1,1] ---
+                s_min, s_max, u, poly_u_lin = self._rescale_x_for_enge(s_reg)  # poly_u_lin(s) = c0 + c1*s
+                c0, c1 = map(float, poly_u_lin.coef)
 
-                    if enge_side == "enge_deg_L":
-                        self.fit_data[field][:idx[0]] =y_fit_rescaled
-                        self.fit_pars[field]["enge_L"] = [best_A_scan] + list(poly_x.coef)
-                    else:
-                        self.fit_data[field][idx[1]:] =y_fit_rescaled
-                        self.fit_pars[field]["enge_R"] = [best_A_scan] + list(poly_x.coef)
+                # --- scan A to match the border in the same shifted space ---
+                deg = int(self.shapes[field][enge_side])
+                ymax = float(np.max(y_tail))
+                A_scan = np.linspace(ymax * 1.01, ymax * 3.0, 100)
 
+                errs = [
+                    self._error_for_A(Ac, u, y_tail, y0=y0, enge_side=enge_side, deg=deg)
+                    for Ac in A_scan
+                ]
+                A_best = float(A_scan[int(np.argmin(errs))])
 
+                # --- fit polynomial in u with chosen A (stable because |u|≤1) ---
+                poly_u = self._fit_polynomial(u, y_tail, A_best, deg=deg)  # Polynomial in u
+                y_fit_u = self._enge_function(u, poly_u, A_best)
+
+                # undo positivity shift for the numeric fit we store
+                if shift != 0.0:
+                    y_fit_u = y_fit_u - shift
+
+                # --- write back samples and *store exportable parameters* ---
+                if enge_side == "enge_deg_L":
+                    self.fit_data[field][:idxL + 1] = y_fit_u
+                    # Store [A, a0..aN] where a_i are coefficients in *u*
+                    self.fit_pars[field]["enge_L"] = [A_best] + [float(c) for c in poly_u.coef]
+                    # Also store u(s) map so we can export Horner(P(u(s)))
+                    self.fit_pars[field]["enge_L_u_map"] = [c0, c1]
+                else:
+                    self.fit_data[field][idxR:] = y_fit_u
+                    self.fit_pars[field]["enge_R"] = [A_best] + [float(c) for c in poly_u.coef]
+                    self.fit_pars[field]["enge_R_u_map"] = [c0, c1]
 
     ####################################################################################################################
     # TRANSVERSE GRADIENTS
@@ -486,7 +562,7 @@ class Wiggler:
                 terms.append(f"({a})*s**{i}")
         return " + ".join(terms) if terms else "0"
 
-    def _enge_str(self, enge_pars, style="python"):
+    def _enge_str(self, enge_pars):
         """enge_pars = [A, a0, a1, ..., aN]; Enge(s) = A * expit(-P_N(s)) = A/(1+exp(P_N(s)))."""
 
         # Extract Enge parameters from self.fit_pars
@@ -518,9 +594,19 @@ class Wiggler:
         """
 
         pars = self.fit_pars[component]
-        enge_L = self._enge_str(pars["enge_L"])
+
+        # Horner-form Enge in u(s) for left tail
+        Acoefs_L = pars["enge_L"]  # [A, a0..aN]  (coeffs in u)
+        c0L, c1L = pars["enge_L_u_map"]  # u(s) = c0 + c1*s
+        enge_L = self._enge_str_u(Acoefs_L, c0L, c1L)
+
+        # Sinusoid middle part (unchanged)
         sines = self._sines_str(pars["sines"])
-        enge_R = self._enge_str(pars["enge_R"])
+
+        # Horner-form Enge in u(s) for right tail
+        Acoefs_R = pars["enge_R"]
+        c0R, c1R = pars["enge_R_u_map"]
+        enge_R = self._enge_str_u(Acoefs_R, c0R, c1R)
 
         sL = self.s_full[self.borders_idx[component][0]]
         sR = self.s_full[self.borders_idx[component][1]]
