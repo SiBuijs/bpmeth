@@ -36,14 +36,13 @@ Test_Wiggler = Wiggler(file_path='example_data/knot_map_test.txt',
                        dy=dz,
                        ds=dz,
                        peak_window=(99, 2100),
-                       data_cut=(None, None),
                        n_modes=[3, 3, 1],
                        enge_deg=[[25, 26], [30, 35], [11, 11]],
                        der=False
 )
 
 Test_Wiggler.set()
-Test_Wiggler.plot_fields()
+#Test_Wiggler.plot_fields()
 print("DERIVATIVES:")
 Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
                            xy_point=(0, 0),
@@ -51,15 +50,14 @@ Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
                            dy=dz,
                            ds=dz,
                            n_modes=[6, 4, 1],
-                           data_cut=(50, -50),
-                           enge_deg=[[26, 30], [26, 23], [15, 15]],
+                           enge_deg=[[35, 35], [25, 35], [15, 15]],
                            peak_window=(99, 2100),
                            der=True,
-                           filter_params=(85, 2015, 15, 21, 2)
+                           filter_params=(None, 2090, 7, 11, 3)
 )
 
 Test_Wiggler_Der.set()
-Test_Wiggler_Der.plot_fields()
+#Test_Wiggler_Der.plot_fields()
 
 Bx_string = Test_Wiggler.export_piecewise_string(component="Bx")
 Bx_der_string = Test_Wiggler_Der.export_piecewise_string(component="Bx")
@@ -67,6 +65,11 @@ By_string = Test_Wiggler.export_piecewise_string(component="By")
 By_der_string = Test_Wiggler_Der.export_piecewise_string(component="By")
 Bs_string = Test_Wiggler.export_piecewise_string(component="Bs")
 
+print(Bx_string)
+print(By_string)
+print(Bs_string)
+print(Bx_der_string)
+print(By_der_string)
 
 a1 = Bx_string
 b1 = By_string
@@ -85,7 +88,7 @@ print(f"Bx der string: {a3}")
 print(f"By der string: {b3}")
 
 curv=0
-
+prrr
 wiggler = bp.GeneralVectorPotential(hs=f"{curv}",a=(f"{a1}", f"{a2}", f"{a3}"),b=(f"{b1}", f"{b2}", f"{b3}"), bs=f"{bs}")
 
 # NOTE: Investigate how bpmeth makes these functions, there might be something that causes discrepancies.

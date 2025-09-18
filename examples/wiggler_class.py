@@ -33,7 +33,6 @@ class Wiggler:
         dy=0.001,
         ds=0.001,
         peak_window=(100, 2100),
-        data_cut=(None, None),
         n_modes=[3, 3, 3],
         enge_deg = [[15, 15], [15, 15], [15, 15]],
         der=False,
@@ -44,21 +43,10 @@ class Wiggler:
         self.xy_point = xy_point
         self.dx, self.dy, self.ds = dx, dy, ds
         self.peak_window = peak_window
-        self.data_cut = data_cut
 
         # NOTE: Filter noise is now only used for the right tails, because those are noisy.
         # We can add a more general functionality later.
         self.filter_params = filter_params
-
-        # data_cut can be used to remove a part of the tail.
-        # Mainly used if the data is noisy close to the tails.
-        if data_cut != (None, None):
-            if data_cut[0] != None and data_cut[1] == None:
-                self.peak_window = (peak_window[0]-data_cut[0], peak_window[1])
-            if data_cut[1] != None and data_cut[0] == None:
-                self.peak_window = (peak_window[0], peak_window[1]+data_cut[1])
-            if data_cut[0] != None and data_cut[1] != None:
-                self.peak_window = (peak_window[0]-data_cut[0], peak_window[1]+data_cut[1])
 
 
         self.shapes = {
@@ -99,6 +87,8 @@ class Wiggler:
         self._fit_sinusoids()
         self._fit_enge()
 
+
+
     ####################################################################################################################
     # EVALUATION FUNCTIONS
     ####################################################################################################################
@@ -132,8 +122,20 @@ class Wiggler:
     #  - Coefficients of the polynomial in the exponent, starting from the constant term
     # Thus, for a polynomial of degree n, the parameter list has length n+2
     @staticmethod
-    def _enge_function(x, poly, amp):
-        return amp * expit(-poly(x))
+    def _enge_function(x, y_off, amp, poly):
+        return y_off + amp * expit(-poly(x))
+
+    # PRIVATE
+    # This function is a numerically safe logarithm, which is used in the inverse of the Enge function.
+    @staticmethod
+    def _safe_logit(y, A):
+        """
+        Numerically safe log(A/y - 1). Assumes y_pos has already been shifted positive.
+        Clips to keep values strictly inside (0, A).
+        """
+        eps = np.finfo(float).eps
+        y = np.clip(y, eps, A * (1.0 - 1e-8))
+        return np.log(A / y - 1.0)
 
 
 
@@ -156,13 +158,13 @@ class Wiggler:
     def select_xy(self):
         subset = self.df.xs(self.xy_point, level=["X", "Y"]).sort_index()
 
-        self.s_full = subset.index.to_numpy()[self.data_cut[0]:self.data_cut[1]] * self.ds
+        self.s_full = subset.index.to_numpy() * self.ds
 
         # Store the raw data for each field.
 
         for field in ["Bx", "By", "Bs"]:
             if self.der == False:
-                self.raw_data[field] = subset[field].to_numpy()[self.data_cut[0]:self.data_cut[1]]
+                self.raw_data[field] = subset[field].to_numpy()
 
             else:
                 self._fit_transverse_parabolas()
@@ -196,27 +198,16 @@ class Wiggler:
         w_left = self.peak_window[0]
         w_right = self.peak_window[1]
 
-        # For Bx, it was found that finding the peaks and valleys works best.
-        field_peaks = find_peaks(self.raw_data["Bx"])[0]
-        field_valleys = find_peaks(-self.raw_data["Bx"])[0]
-        field_peaks = field_peaks[np.logical_and(field_peaks > w_left, field_peaks < w_right)]
-        field_valleys = field_valleys[np.logical_and(field_valleys > w_left, field_valleys < w_right)]
-        field_extrema = np.sort(np.concatenate((field_peaks, field_valleys)))
-        self.borders_idx["Bx"] = [field_extrema[1], field_extrema[-2]]
-
-        # For By, it was found that finding the zero-crossings works best.
-        if not self.der:
-            field_zeros = self.find_sign_change_indices(self.raw_data["By"], eps=0.0)
-            field_zeros = field_zeros[np.logical_and(field_zeros > w_left, field_zeros < w_right)]
-            self.borders_idx["By"] = [field_zeros[1], field_zeros[-2]]
-
-        else:
-            field_peaks = find_peaks(self.raw_data["By"])[0]
-            field_valleys = find_peaks(-self.raw_data["By"])[0]
+        for field in ["Bx", "By"]:
+            field_peaks = find_peaks(self.raw_data[field])[0]
+            field_valleys = find_peaks(-self.raw_data[field])[0]
             field_peaks = field_peaks[np.logical_and(field_peaks > w_left, field_peaks < w_right)]
             field_valleys = field_valleys[np.logical_and(field_valleys > w_left, field_valleys < w_right)]
             field_extrema = np.sort(np.concatenate((field_peaks, field_valleys)))
-            self.borders_idx["By"] = [field_extrema[1], field_extrema[-5]]
+            if not self.der:
+                self.borders_idx[field] = [field_extrema[1], field_extrema[-2]]
+            else:
+                self.borders_idx[field] = [field_extrema[1], field_extrema[-3]]
 
         # Temporary workaround: Bs borders are set to the same as Bx borders.
         self.borders_idx["Bs"] = (self.borders_idx["By"][0], self.borders_idx["By"][1])
@@ -358,7 +349,7 @@ class Wiggler:
         y_min = np.min(y)
 
         if y_min <= 0:
-            y = y - y_min*1.05 + 0.1
+            y = y - y_min + 0.1
 
         return y
 
@@ -380,30 +371,20 @@ class Wiggler:
         poly_u = Polynomial.fit(u_m, t_m, deg=deg_eff, domain=[-1, 1], window=[-1, 1])
         return poly_u.convert(kind=Polynomial, domain=[-1, 1], window=[-1, 1])
 
-    def _safe_logit(self, y_pos, A):
-        """
-        Numerically safe log(A/y - 1). Assumes y_pos has already been shifted positive.
-        Clips to keep values strictly inside (0, A).
-        """
-        import numpy as np
-        eps = np.finfo(float).eps
-        y = np.clip(y_pos, eps, A * (1.0 - 1e-8))
-        return np.log(A / y - 1.0)
-
     # PRIVATE
     # This method computes the error for a given A value.
     # It first calculates an array of y, named yhat.
     # Then, it rescales A such that yhat matches y0, which is derived from the sinusoid fit.
     # Then, it recomputes yhat with the rescaled A.
     # This should return a fit that matches the y-value of the sinusoid fit at the border.
-    def _error_for_A(self, A, x, y, y0, enge_side, deg=15):
+    def _error_for_A(self, y_off, A, x, y, y0, enge_side, deg=15):
         poly = self._fit_polynomial(x, y, A, deg=deg)
-        y_hat = self._enge_function(x, poly, A)
+        y_hat = self._enge_function(x, y_off, A, poly)
         if enge_side == "enge_deg_L":
             A *= y0 / y_hat[-1]
         elif enge_side == "enge_deg_R":
             A *= y0 / y_hat[0]
-        y_hat = self._enge_function(x, poly, A)
+        y_hat = self._enge_function(x, y_off, A, poly)
         return np.sum((y - y_hat) ** 2)
 
     # PRIVATE
@@ -415,31 +396,7 @@ class Wiggler:
     # TODO: That's similar to what we did before with the number of slices in the polynomial chain.
     # TODO: Note that now, we have four polynomials of order ~20, instead of ~20 polynomials of order 3.
     # TODO: So this is a good improvement, I'd say.
-
-    def _horner_in_affine_var_str(self, coeffs, c0, c1, s_symbol="s"):
-        """
-        Build a numerically stable Horner-form string for P(u) with u = c0 + c1*s.
-        coeffs = [a0, a1, ..., aN]   (monomial coefficients in u)
-        Returns: (((aN)*u + a{N-1})*u + ... ) + a0   with u expanded inline.
-        """
-        u_expr = f"(({c0}) + ({c1})*{s_symbol})"
-        if not coeffs:
-            return "0"
-        acc = f"({coeffs[-1]})"
-        for a in reversed(coeffs[:-1]):
-            acc = f"(({acc})*{u_expr} + ({a}))"
-        return acc
-
-    def _enge_str_u(self, A_and_coeffs, c0, c1, s_symbol="s"):
-        """
-        Enge string using a polynomial in u(s):  A/(1 + exp(P(u(s))))
-        A_and_coeffs = [A, a0, a1, ..., aN]   (coeffs in u, not in s)
-        """
-        A, *coeffs_u = A_and_coeffs
-        P = self._horner_in_affine_var_str(coeffs_u, c0, c1, s_symbol=s_symbol)
-        return f"({A})/(1+exp(({P})))"
-
-    def _fit_enge(self, fun=True):
+    def _fit_enge(self):
         """
         Fit Enge tails (left/right) for Bx/By/Bs.
 
@@ -464,9 +421,6 @@ class Wiggler:
                     field_reg = self.raw_data[field][idxR:]
                     border_ix = idxR
 
-                if s_reg.size == 0:
-                    continue
-
                 # --- positivity shift used consistently for tail *and* border ---
                 b_min = float(np.min(field_reg))
                 shift = (-b_min + 0.1) if (b_min <= 0) else 0.0
@@ -483,29 +437,25 @@ class Wiggler:
                 A_scan = np.linspace(ymax * 1.01, ymax * 3.0, 100)
 
                 errs = [
-                    self._error_for_A(Ac, u, y_tail, y0=y0, enge_side=enge_side, deg=deg)
+                    self._error_for_A(shift, Ac, u, y_tail, y0=y0, enge_side=enge_side, deg=deg)
                     for Ac in A_scan
                 ]
                 A_best = float(A_scan[int(np.argmin(errs))])
 
                 # --- fit polynomial in u with chosen A (stable because |u|≤1) ---
                 poly_u = self._fit_polynomial(u, y_tail, A_best, deg=deg)  # Polynomial in u
-                y_fit_u = self._enge_function(u, poly_u, A_best)
-
-                # undo positivity shift for the numeric fit we store
-                if shift != 0.0:
-                    y_fit_u = y_fit_u - shift
+                y_fit_u = self._enge_function(u, -shift, A_best, poly_u)
 
                 # --- write back samples and *store exportable parameters* ---
                 if enge_side == "enge_deg_L":
                     self.fit_data[field][:idxL + 1] = y_fit_u
                     # Store [A, a0..aN] where a_i are coefficients in *u*
-                    self.fit_pars[field]["enge_L"] = [A_best] + [float(c) for c in poly_u.coef]
+                    self.fit_pars[field]["enge_L"] = [-shift] + [A_best] + [float(c) for c in poly_u.coef]
                     # Also store u(s) map so we can export Horner(P(u(s)))
                     self.fit_pars[field]["enge_L_u_map"] = [c0, c1]
                 else:
                     self.fit_data[field][idxR:] = y_fit_u
-                    self.fit_pars[field]["enge_R"] = [A_best] + [float(c) for c in poly_u.coef]
+                    self.fit_pars[field]["enge_R"] = [-shift] + [A_best] + [float(c) for c in poly_u.coef]
                     self.fit_pars[field]["enge_R_u_map"] = [c0, c1]
 
     ####################################################################################################################
@@ -526,15 +476,9 @@ class Wiggler:
         for field in ["Bx", "By", "Bs"]:
             x = [-self.dx, 0, self.dx]
 
-            if self.data_cut is None:
-                fieldm10 = subsetm10[field].to_numpy()
-                field00  = subset00[field].to_numpy()
-                fieldp10 = subsetp10[field].to_numpy()
-
-            else:
-                fieldm10 = subsetm10[field].to_numpy()[self.data_cut[0]:self.data_cut[1]]
-                field00  = subset00[field].to_numpy()[self.data_cut[0]:self.data_cut[1]]
-                fieldp10 = subsetp10[field].to_numpy()[self.data_cut[0]:self.data_cut[1]]
+            fieldm10 = subsetm10[field].to_numpy()
+            field00  = subset00[field].to_numpy()
+            fieldp10 = subsetp10[field].to_numpy()
 
             for ii in range(len(field00)):
                 if parabolas[field] is None:
@@ -567,9 +511,9 @@ class Wiggler:
 
         # Extract Enge parameters from self.fit_pars
 
-        A, *poly = enge_pars
+        y_off, A, *poly = enge_pars
         P = self._poly_str(poly)
-        return f"({A})/(1+exp(({P})))"
+        return f"{y_off} + ({A})/(1+exp(({P})))"
 
     @staticmethod
     def _sines_str(sine_pars):
@@ -584,38 +528,66 @@ class Wiggler:
             terms.append(f"({Aci})*cos(({ki})*s) + ({Asi})*sin(({ki})*s)")
         return " + ".join(terms)
 
-    def export_piecewise_string(self, component="Bx"):
+    def export_piecewise_string(self, component: str, sig=12, tol=1e-14):
         """
-        Build a piecewise function string for one component ('Bx'|'By'|'Bs').
+        Compact NumPy expression for GeneralVectorPotential.
 
-        style:
-          - 'python' -> returns: 'lambda s: ...' using numpy (np.exp/np.sin/np.cos)
-          - 'sympy'  -> returns: 'Piecewise((.., cond1), (.., cond2), (.., True))'
+        - Uses np.polyval on u(s)=c0+c1*s for the Enge tails (stable, minimal nesting).
+        - Uses a two-level np.where for the piecewise split.
+        - Formats numbers with `sig` significant digits and prunes tiny trailing coeffs.
         """
-
         pars = self.fit_pars[component]
 
-        # Horner-form Enge in u(s) for left tail
-        Acoefs_L = pars["enge_L"]  # [A, a0..aN]  (coeffs in u)
-        c0L, c1L = pars["enge_L_u_map"]  # u(s) = c0 + c1*s
-        enge_L = self._enge_str_u(Acoefs_L, c0L, c1L)
+        # --- tiny inline utils (to avoid separate helpers) ---
+        fmt = lambda x: f"{float(x):.{sig}g}"
 
-        # Sinusoid middle part (unchanged)
-        sines = self._sines_str(pars["sines"])
+        def prune(coeffs):
+            # drop tiny trailing coeffs (highest degree end for polyval)
+            import numpy as _np
+            c = _np.asarray(coeffs, float)
+            i = len(c) - 1
+            while i > 0 and abs(c[i]) < tol:
+                i -= 1
+            return c[:i + 1].tolist()
 
-        # Horner-form Enge in u(s) for right tail
-        Acoefs_R = pars["enge_R"]
+        # borders (adjust to however you store them)
+        sL = fmt(self.s_full[self.borders_idx[component][0]])  # left boundary of middle region
+        sR = fmt(self.s_full[self.borders_idx[component][1]])  # right boundary of middle region
+
+        # --- Left Enge: A/(1+exp(polyval(a[::-1], u))) with u = c0 + c1*s
+        A_L, *au_L = pars["enge_L"]  # coeffs are in u, ascending degree
+        c0L, c1L = pars["enge_L_u_map"]
+        au_L_hi = list(reversed(prune(au_L)))  # np.polyval wants highest-first
+        enge_L = (
+            f"({fmt(A_L)})/(1+np.exp("
+            f"np.polyval(np.array([{','.join(fmt(c) for c in au_L_hi)}]), "
+            f"({fmt(c0L)}+{fmt(c1L)}*s)"
+            f")))"
+        )
+
+        # --- Middle: your sinusoid; make sure it uses np.*, not math/sympy
+        # Example placeholder; replace with your actual parameterization:
+        # sines = f"({fmt(C0)} + {fmt(A0)}*np.sin({fmt(k0)}*s + {fmt(phi0)}))"
+        sines = self._sines_str(pars["sines"])  # if you already have a NumPy version
+        # If not, inline-build it here similarly (using np.sin/np.cos).
+
+        # --- Right Enge (same pattern)
+        A_R, *au_R = pars["enge_R"]
         c0R, c1R = pars["enge_R_u_map"]
-        enge_R = self._enge_str_u(Acoefs_R, c0R, c1R)
+        au_R_hi = list(reversed(prune(au_R)))
+        enge_R = (
+            f"({fmt(A_R)})/(1+np.exp("
+            f"np.polyval(np.array([{','.join(fmt(c) for c in au_R_hi)}]), "
+            f"({fmt(c0R)}+{fmt(c1R)}*s)"
+            f")))"
+        )
 
-        sL = self.s_full[self.borders_idx[component][0]]
-        sR = self.s_full[self.borders_idx[component][1]]
-
-        # Piecewise((expr, condition), (expr, condition), (expr, True))
-        cond1 = f"s < ({sL})"
-        cond2 = f"(s >= ({sL})) & (s <= ({sR}))"
-
-        return f"Piecewise(( {enge_L}, {cond1} ), ( {sines}, {cond2} ), ( {enge_R}, True ))"
+        # --- Piecewise via np.where (fast to parse and compile)
+        # Region order: left (s < sL) -> middle (s <= sR) -> right
+        return (
+            f"(np.where((s < {sL}), {enge_L}, "
+            f"np.where((s <= {sR}), {sines}, {enge_R})))"
+        )
 
     ####################################################################################################################
     # PLOTTING
