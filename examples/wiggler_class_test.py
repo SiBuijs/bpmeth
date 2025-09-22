@@ -37,7 +37,7 @@ Test_Wiggler = Wiggler(file_path='example_data/knot_map_test.txt',
                        ds=dz,
                        peak_window=(99, 2100),
                        n_modes=[3, 3, 1],
-                       enge_deg=[[25, 26], [30, 35], [11, 11]],
+                       enge_deg=[[8, 5], [5, 5], [5, 5]],
                        der=False
 )
 
@@ -51,7 +51,7 @@ Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
                            dy=dz,
                            ds=dz,
                            n_modes=[6, 4, 1],
-                           enge_deg=[[35, 35], [25, 35], [15, 15]],
+                           enge_deg=[[8, 5], [8, 10], [5, 5]],
                            peak_window=(99, 2100),
                            der=True,
                            filter_params=(None, 2090, 7, 11, 3)
@@ -66,15 +66,16 @@ By_string = Test_Wiggler.export_piecewise_string(component="By")
 By_der_string = Test_Wiggler_Der.export_piecewise_string(component="By")
 Bs_string = Test_Wiggler.export_piecewise_string(component="Bs")
 
-print(Bx_string)
-print(By_string)
-print(Bs_string)
-print(Bx_der_string)
-print(By_der_string)
+#print(Test_Wiggler.debug_piece_counts("Bs"))
+#print(Test_Wiggler_Der.debug_piece_counts("Bs"))
+#print(By_string)
+#print(Bs_string)
+#print(Bx_der_string)
+#print(By_der_string)
 
 a1 = Bx_string
 b1 = By_string
-bs = Bs_string
+bs = "0" #Bs_string
 
 a2 = 0
 b2 = 0
@@ -82,34 +83,39 @@ b2 = 0
 a3 = Bx_der_string
 b3 = By_der_string
 
-print(f"Bx string: {a1}")
-print(f"By string: {b1}")
-print(f"Bs string: {bs}")
-print(f"Bx der string: {a3}")
-print(f"By der string: {b3}")
+#print(f"Bx string: {a1}")
+#print(f"By string: {b1}")
+#print(f"Bs string: {bs}")
+#print(f"Bx der string: {a3}")
+#print(f"By der string: {b3}")
 
 curv=0
 
 wiggler = bp.GeneralVectorPotential(hs=f"{curv}",a=(f"{a1}", f"{a2}", f"{a3}"),b=(f"{b1}", f"{b2}", f"{b3}"), bs=f"{bs}")
 
+print("Made the Vector Potential.\nNow making the functions...")
+
 # NOTE: Investigate how bpmeth makes these functions, there might be something that causes discrepancies.
 Bxfun, Byfun, Bsfun = wiggler.get_Bfield()
+
+print("Made the functions.\nNow plotting...")
 
 
 # ----------------------------------------------------------------------------------------------------------------------
 # Show a comparison of the fitted field and the original field at (0, 0).
 xoffset = 0.0
 yoffset = 0.0
+cut_idx_L = 4
+cut_idx_R = -5
+slice = slice(cut_idx_L, cut_idx_R)
 
 Test_Wiggler.xy_point = (xoffset, yoffset)
 Test_Wiggler.select_xy()
-Bx00 = Test_Wiggler.raw_data["Bx"]
-By00 = Test_Wiggler.raw_data["By"]
-Bz00 = Test_Wiggler.raw_data["Bs"]
+Bx00 = Test_Wiggler.raw_data["Bx"][slice]
+By00 = Test_Wiggler.raw_data["By"][slice]
+Bz00 = Test_Wiggler.raw_data["Bs"][slice]
 
-Z  = Test_Wiggler.s_full
-
-
+Z  = Test_Wiggler.s_full[slice]
 
 fig1, (ax1, ax2, ax3) = plt.subplots(3, figsize=(10, 4), constrained_layout=True)
 ax1.plot(Z, Bx00, label=f"Bx Data  ({xoffset}, {yoffset})")
@@ -128,15 +134,15 @@ ax2.grid()
 ax3.grid()
 
 # ----------------------------------------------------------------------------------------------------------------------
-# Show a comparison of the fitted field and the original field at (1, 1).
+# Show a comparison of the fitted field and the original field at (1, 0).
 xoffset = 1.0
 yoffset = 1.0
 
 Test_Wiggler.xy_point = (xoffset, yoffset)
 Test_Wiggler.select_xy()
-Bx10 = Test_Wiggler.raw_data["Bx"]
-By10 = Test_Wiggler.raw_data["By"]
-Bz10 = Test_Wiggler.raw_data["Bs"]
+Bx10 = Test_Wiggler.raw_data["Bx"][slice]
+By10 = Test_Wiggler.raw_data["By"][slice]
+Bz10 = Test_Wiggler.raw_data["Bs"][slice]
 
 
 ax1.plot(Z, Bx10, label=f"Bx Data  ({xoffset}, {yoffset})")
@@ -150,24 +156,33 @@ ax2.legend()
 ax3.legend()
 
 plt.show()
-
-# ----------------------------------------------------------------------------------------------------------------------
-# Show a comparison of the fitted field and the original field at (1, 0).
 prrr
-fig2, (ax4, ax5, ax6) = plt.subplots(3, figsize=(10, 4), constrained_layout=True)
-ax4.plot(Z, Bx10 - Bx00, label=f"Bx Data  ({xoffset}, {yoffset})")
-ax4.plot(Z, Bxfun(dz, 0, Z) - Bxfun(0, 0, Z), label=f"Bx bpmeth  ({xoffset}, {yoffset})", linestyle='dashed')
-ax5.plot(Z, By10 - By00, label=f"Bx Data  ({xoffset}, {yoffset})")
-ax5.plot(Z, Byfun(dz, 0, Z) - Byfun(0, 0, Z), label=f"Bx bpmeth  ({xoffset}, {yoffset})", linestyle='dashed')
-ax6.plot(Z, Bz10 - Bz00, label=f"Bz Data  ({xoffset}, {yoffset})")
-ax6.plot(Z, Bsfun(dz, 0, Z) - Bsfun(0, 0, Z), label=f"Bx bpmeth  ({xoffset}, {yoffset})", linestyle='dashed')
-ax4.set_title(f'Field Comparison at {xoffset, yoffset}')
-ax4.set_ylabel('Bx(1, 0) - Bx(0, 0) [T]')
-ax5.set_ylabel('By(1, 0) - By(0, 0) [T]')
-ax6.set_ylabel('Bz(1, 0) - Bz(0, 0) [T]')
-ax6.set_xlabel('Z [m]')
-ax4.grid()
-ax5.grid()
-ax6.grid()
 
+print("Plotted the fields.\nNow making the Hamiltonian...")
+
+qp0 = [0,0,0,0,0,0]
+length = Test_Wiggler.s_full[-1] - Test_Wiggler.s_full[0]
+
+H_wiggler = bp.Hamiltonian(length, curv, wiggler)
+
+print("Made the Hamiltonian.\nNow solving the equations of motion...")
+
+ivp_opt={"rtol":1e-4, "atol":1e-7}
+sol_wiggler = H_wiggler.solve(qp0, ivp_opt=ivp_opt)
+H_wiggler.plotsol(qp0, ivp_opt=ivp_opt)
 plt.show()
+
+print("Finished first track")
+
+import xtrack as xt
+
+p = xt.Particles(x = np.linspace(-1e-3, 1e-3, 1), energy0=10e9, mass0=xt.ELECTRON_MASS_EV)
+sol = H_wiggler.track(p, return_sol=True)
+print(sol[0].keys())
+t = sol[0]['t']
+y = sol[0]['y'][0]
+
+plt.plot(t,y)
+plt.show()
+
+print("Finished second track")
