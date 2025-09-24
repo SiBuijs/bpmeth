@@ -11,12 +11,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import scipy as sc
+import sympy as sp
 from scipy.signal import find_peaks
 from scipy.optimize import curve_fit
-from scipy.special import expit
-from numpy.polynomial import Polynomial, Chebyshev, Legendre
-from dataclasses import dataclass, field
-from typing import Dict, Iterable, Tuple, Optional
+from numpy.polynomial import Polynomial
 import matplotlib.pyplot as plt
 from scipy.special import expit
 
@@ -593,33 +591,15 @@ class Wiggler:
             terms.append(f"({Aci})*cos(({ki})*s) + ({Asi})*sin(({ki})*s)")
         return " + ".join(terms)
 
-    def export_piecewise_string(self, component: str, sig=10, tol=1e-14):
-        """
-        Export as a sum of Heaviside-gated pieces (robust against external mask mixing).
+    import sympy as sp
 
-        Layout: L1, L2, L3, center, R1, R2, R3,
-        where gates are half-open on the right (H(x, 0) ⇒ 0 at the boundary).
-        """
+    def export_piecewise_string(self, component: str, sig=10, tol=1e-14):
         pars = self.fit_pars[component]
 
-        # formatters: coefficients vs boundaries
         fmtC = lambda x: f"{float(x):.{sig}g}"
-        fmtB = lambda x: f"{float(x):.17g}"  # keep full precision for cut points
 
-        # --- helpers ---
-        def prune(coeffs):
-            import numpy as _np
-            c = _np.asarray(coeffs, float)
-            i = len(c) - 1
-            while i > 0 and abs(c[i]) < tol:
-                i -= 1
-            return c[:i + 1].tolist()
-
-        def poly_sum_u(coeffs_u, c0, c1, s_symbol="s"):
-            coeffs_u = prune(coeffs_u)
-            if not coeffs_u:
-                return "0"
-            u = f"(({fmtC(c0)}) + ({fmtC(c1)})*{s_symbol})"
+        def poly_sum_u(coeffs_u, c0, c1):
+            u = f"(({fmtC(c0)}) + ({fmtC(c1)})*s)"
             terms = []
             for k, ak in enumerate(coeffs_u):
                 ak = fmtC(ak)
@@ -629,25 +609,17 @@ class Wiggler:
                     terms.append(f"({ak})*{u}")
                 else:
                     terms.append(f"({ak})*{u}**{k}")
-            return " + ".join(terms)
+            return " + ".join(terms) if terms else "0"
 
         def enge_piece(key):
             pk = pars.get(key)
-            if pk is None:
-                return None
             y0, A, *au = pk
-            # prefer per-piece u-map; fall back to side map if present
-            if key.endswith(("L1", "L2", "L3")):
-                c0, c1 = pars.get(f"{key}_u_map", pars.get("enge_L_u_map", (0.0, 1.0)))
-            else:
-                c0, c1 = pars.get(f"{key}_u_map", pars.get("enge_R_u_map", (0.0, 1.0)))
+            c0, c1 = pars.get(f"{key}_u_map")
             P = poly_sum_u(au, c0, c1)
-            return f"({fmtC(y0)}) + ({fmtC(A)})/(1+exp(({P})))"
+            return f"({fmtC(y0)}) + ({fmtC(A)})*(1 - tanh(({P})/2))/2"
 
         def sines_expr():
-            a = pars.get("sines")
-            if a is None or len(a) == 0:
-                return None
+            a = pars.get("sines", [])
             terms = []
             for i in range(0, len(a), 3):
                 c_amp, s_amp, k = a[i:i + 3]
@@ -659,30 +631,40 @@ class Wiggler:
         b0, b1, b2, b3, b4, b5 = self.borders_idx[component]
         s0, s1, s2, s3, s4, s5 = (self.s_full[i] for i in (b0, b1, b2, b3, b4, b5))
 
-        # --- pieces ---
-        L1 = enge_piece("enge_L1")
-        L2 = enge_piece("enge_L2")
-        L3 = enge_piece("enge_L3")
-        C = sines_expr()
-        R1 = enge_piece("enge_R1")
-        R2 = enge_piece("enge_R2")
-        R3 = enge_piece("enge_R3")
+        # --- pieces as strings ---
+        L1_s = enge_piece("enge_L1")
+        L2_s = enge_piece("enge_L2")
+        L3_s = enge_piece("enge_L3")
+        C_s = sines_expr()
+        R1_s = enge_piece("enge_R1")
+        R2_s = enge_piece("enge_R2")
+        R3_s = enge_piece("enge_R3")
 
-        # Heaviside with value 0 at the boundary makes intervals half-open on the right.
-        H = "Heaviside"
-        hw = lambda x: f"{H}({x}, 0)"
+        # Turn strings into Sympy expressions ONCE
+        s = sp.symbols("s")
+        locals_map = {"s": s}  # exp/sin/cos are known to sympify already
+        L1 = sp.sympify(L1_s, locals=locals_map)
+        L2 = sp.sympify(L2_s, locals=locals_map)
+        L3 = sp.sympify(L3_s, locals=locals_map)
+        C = sp.sympify(C_s, locals=locals_map)
+        R1 = sp.sympify(R1_s, locals=locals_map)
+        R2 = sp.sympify(R2_s, locals=locals_map)
+        R3 = sp.sympify(R3_s, locals=locals_map)
 
-        parts = []
-        if L1: parts.append(f"({L1})*{hw(f'{fmtB(s0)} - s')}")
-        if L2: parts.append(f"({L2})*{hw(f's - {fmtB(s0)}')}*{hw(f'{fmtB(s1)} - s')}")
-        if L3: parts.append(f"({L3})*{hw(f's - {fmtB(s1)}')}*{hw(f'{fmtB(s2)} - s')}")
-        if C:  parts.append(f"({C})*{hw(f's - {fmtB(s2)}')}*{hw(f'{fmtB(s3)} - s')}")
-        if R1: parts.append(f"({R1})*{hw(f's - {fmtB(s3)}')}*{hw(f'{fmtB(s4)} - s')}")
-        if R2: parts.append(f"({R2})*{hw(f's - {fmtB(s4)}')}*{hw(f'{fmtB(s5)} - s')}")
-        if R3: parts.append(f"({R3})*{hw(f's - {fmtB(s5)}')}")
+        # If your cut points are floats/np floats, this is fine
+        s0, s1, s2, s3, s4, s5 = map(sp.sympify, [s0, s1, s2, s3, s4, s5])
 
-        # If some piece is missing, sum of remaining gates still evaluates everywhere.
-        return " + ".join(parts) if parts else "0"
+        expr = sp.Piecewise(
+            (L1, s < s0),
+            (L2, (s >= s0) & (s < s1)),
+            (L3, (s >= s1) & (s < s2)),
+            (C, (s >= s2) & (s < s3)),
+            (R1, (s >= s3) & (s < s4)),
+            (R2, (s >= s4) & (s < s5)),
+            (R3, s >= s5)
+        )
+
+        return expr
 
     ####################################################################################################################
     # PLOTTING

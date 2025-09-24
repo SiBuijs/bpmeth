@@ -75,7 +75,7 @@ Bs_string = Test_Wiggler.export_piecewise_string(component="Bs")
 
 a1 = Bx_string
 b1 = By_string
-bs = "0" #Bs_string
+bs = Bs_string
 
 a2 = 0
 b2 = 0
@@ -89,14 +89,27 @@ b3 = By_der_string
 #print(f"Bx der string: {a3}")
 #print(f"By der string: {b3}")
 
+# NOTE:
+# a1 = "0" gives cut between first/last extremum in By and first/last extremum in Bx
+# b1 = "0" gives cut between first extremum in By and second extremum in Bx
+# b1 = "0" gives cut between second last and last extremum in Bx
+# Both a1 and b1 = "0" gives cut between first extremum in By and first extremum in Bx
+#   Hard to explain gaps on the right
+
+
+
 curv=0
 
 wiggler = bp.GeneralVectorPotential(hs=f"{curv}",a=(f"{a1}", f"{a2}", f"{a3}"),b=(f"{b1}", f"{b2}", f"{b3}"), bs=f"{bs}")
 
 print("Made the Vector Potential.\nNow making the functions...")
 
+import time
+start_time = time.time()
 # NOTE: Investigate how bpmeth makes these functions, there might be something that causes discrepancies.
 Bxfun, Byfun, Bsfun = wiggler.get_Bfield()
+end_time = time.time()
+print(f"Time to make the functions: {end_time - start_time} seconds")
 
 print("Made the functions.\nNow plotting...")
 
@@ -156,28 +169,39 @@ ax2.legend()
 ax3.legend()
 
 plt.show()
-prrr
 
 print("Plotted the fields.\nNow making the Hamiltonian...")
 
 qp0 = [0,0,0,0,0,0]
 length = Test_Wiggler.s_full[-1] - Test_Wiggler.s_full[0]
-
+start_time = time.time()
 H_wiggler = bp.Hamiltonian(length, curv, wiggler)
+end_time = time.time()
+print(f"Time to make the Hamiltonian: {end_time - start_time} seconds")
 
+"""
 print("Made the Hamiltonian.\nNow solving the equations of motion...")
 
+start_time = time.time()
 ivp_opt={"rtol":1e-4, "atol":1e-7}
 sol_wiggler = H_wiggler.solve(qp0, ivp_opt=ivp_opt)
+end_time = time.time()
+print(f"Time to solve the equations of motion: {end_time - start_time} seconds")
+
 H_wiggler.plotsol(qp0, ivp_opt=ivp_opt)
 plt.show()
+"""
 
 print("Finished first track")
 
 import xtrack as xt
 
+start_time = time.time()
 p = xt.Particles(x = np.linspace(-1e-3, 1e-3, 1), energy0=10e9, mass0=xt.ELECTRON_MASS_EV)
 sol = H_wiggler.track(p, return_sol=True)
+end_time = time.time()
+print(f"Time to track with xtrack: {end_time - start_time} seconds")
+
 print(sol[0].keys())
 t = sol[0]['t']
 y = sol[0]['y'][0]
