@@ -60,11 +60,11 @@ Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
 Test_Wiggler_Der.set()
 #Test_Wiggler_Der.plot_fields()
 
-Bx_string = Test_Wiggler.export_piecewise_string(component="Bx")
-Bx_der_string = Test_Wiggler_Der.export_piecewise_string(component="Bx")
-By_string = Test_Wiggler.export_piecewise_string(component="By")
-By_der_string = Test_Wiggler_Der.export_piecewise_string(component="By")
-Bs_string = Test_Wiggler.export_piecewise_string(component="Bs")
+Bx_string, Cx = Test_Wiggler.export_piecewise_string(component="Bx")
+Bx_der_string, Cx_der = Test_Wiggler_Der.export_piecewise_string(component="Bx")
+By_string, Cy = Test_Wiggler.export_piecewise_string(component="By")
+By_der_string, Cy_der = Test_Wiggler_Der.export_piecewise_string(component="By")
+Bs_string, Cs = Test_Wiggler.export_piecewise_string(component="Bs")
 
 #print(Test_Wiggler.debug_piece_counts("Bs"))
 #print(Test_Wiggler_Der.debug_piece_counts("Bs"))

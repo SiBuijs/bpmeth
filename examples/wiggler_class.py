@@ -664,11 +664,58 @@ class Wiggler:
             (R3, s >= s5)
         )
 
-        return expr
+        separate = [L1, L2, L3, C, R1, R2, R3]
+
+        return expr, separate
 
     ####################################################################################################################
     # PLOTTING
     ####################################################################################################################
+
+    @staticmethod
+    def _integrate(data, ds):
+        return np.cumsum(data) * ds
+
+    def plot_integrated_fields(self):
+        fig1, (ax1, ax2, ax3) = plt.subplots(3, figsize=(10, 4), constrained_layout=True)
+
+        Bx_int_raw = self._integrate(self.raw_data["Bx"], self.ds)
+        By_int_raw = self._integrate(self.raw_data["By"], self.ds)
+        Bs_int_raw = self._integrate(self.raw_data["Bs"], self.ds)
+
+        Bx_int_fit = self._integrate(self.fit_data["Bx"], self.ds)
+        By_int_fit = self._integrate(self.fit_data["By"], self.ds)
+        Bs_int_fit = self._integrate(self.fit_data["Bs"], self.ds)
+
+        ax1.plot(self.s_full, Bx_int_raw, label='Raw Data')
+        ax1.plot(self.s_full, Bx_int_fit, label='Fit', linestyle='--')
+        ax2.plot(self.s_full, By_int_raw, label='Raw Data')
+        ax2.plot(self.s_full, By_int_fit, label='Fit', linestyle='--')
+        ax3.plot(self.s_full, Bs_int_raw, label='Raw Data')
+        ax3.plot(self.s_full, Bs_int_fit, label='Fit', linestyle='--')
+
+        # Add vertical lines at different positions for each subplot
+        for field in ["Bx", "By", "Bs"]:
+            for idx in self.borders_idx[field]:
+                ax = {"Bx": ax1, "By": ax2, "Bs": ax3}[field]
+                ax.axvline(x=self.s_full[idx], color='k', linestyle='--', linewidth=1)
+
+        ax1.set_title(f"Integrated Magnetic Field at (X, Y) = {self.xy_point}")
+        ax1.set_ylabel(r"Integrated Horizontal Field, $\int B_x \, ds$ [T·m]")
+        ax2.set_ylabel(r"Integrated Vertical Field, $\int B_y \, ds$ [T·m]")
+        ax3.set_ylabel(r"Integrated Longitudinal Field, $\int B_s \, ds$ [T·m]")
+        ax3.set_xlabel(r"Longitudinal Position, $s$ [m]")
+
+        ax1.legend(loc="lower right")
+        ax2.legend(loc="lower right")
+        ax3.legend(loc="upper right")
+
+        # Turn on the grids.
+        ax1.grid()
+        ax2.grid()
+        ax3.grid()
+
+        plt.show()
 
     # PUBLIC
     # Plot the data against the fit.
