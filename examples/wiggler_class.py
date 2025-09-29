@@ -12,12 +12,11 @@ import numpy as np
 import pandas as pd
 import scipy as sc
 import sympy as sp
-from numpy.ma.core import zeros_like
+from bpmeth import poly_fit
 from scipy.signal import find_peaks
 from scipy.optimize import curve_fit
 from numpy.polynomial import Polynomial
 import matplotlib.pyplot as plt
-from scipy.special import expit
 
 
 # ================================ Main class ================================
@@ -33,7 +32,8 @@ class Wiggler:
         ds=0.001,
         peak_window=(100, 2100),
         n_modes=[3, 3, 3],
-        enge_deg = [[15, 15], [15, 15], [15, 15]],
+        poly_deg = [[15, 15], [15, 15], [15, 15]],
+        poly_pieces=[[3, 3], [3, 3], [3, 3]],
         der=False,
         filter_params=None,
     ):
@@ -47,11 +47,13 @@ class Wiggler:
         # We can add a more general functionality later.
         self.filter_params = filter_params
 
-
         self.shapes = {
-            "Bx": {"n_modes": n_modes[0], "enge_deg_L": enge_deg[0][0], "enge_deg_R": enge_deg[0][1]},
-            "By": {"n_modes": n_modes[1], "enge_deg_L": enge_deg[1][0], "enge_deg_R": enge_deg[1][1]},
-            "Bs": {"n_modes": n_modes[2], "enge_deg_L": enge_deg[2][0], "enge_deg_R": enge_deg[2][1]},
+            "Bx": {"n_modes": n_modes[0], "poly_deg_L": poly_deg[0][0], "poly_deg_R": poly_deg[0][1],
+                   "n_pieces_L": poly_pieces[0][0], "n_pieces_R": poly_pieces[0][1]},
+            "By": {"n_modes": n_modes[1], "poly_deg_L": poly_deg[1][0], "poly_deg_R": poly_deg[1][1],
+                   "n_pieces_L": poly_pieces[1][0], "n_pieces_R": poly_pieces[1][1]},
+            "Bs": {"n_modes": n_modes[2], "poly_deg_L": poly_deg[2][0], "poly_deg_R": poly_deg[2][1],
+                   "n_pieces_L": poly_pieces[2][0], "n_pieces_R": poly_pieces[2][1]},
         }
 
         self.df = None
@@ -59,8 +61,8 @@ class Wiggler:
         self.der = der
 
         # Dictionary that holds a list of borders for each field
-        self.borders_idx = {"Bx": None, "By": None, "Bs": None}
-        self.slices = {"Bx": None, "By": None, "Bs": None}
+        self.borders_idx  = {"Bx": None, "By": None, "Bs": None}
+        self.poly_borders = {"Bx": [], "By": [], "Bs": []}
 
         # Data dictionaries
         # raw_data holds the data from the file
@@ -69,23 +71,7 @@ class Wiggler:
         self.fit_data   = {"Bx": None, "By": None, "Bs": None}
 
         # Dictionary to hold lists of fitted parameters for each field component
-        self.fit_pars = {
-            "Bx": {
-                "enge_L1": None, "enge_L2": None, "enge_L3": None,
-                "sines": None,
-                "enge_R1": None, "enge_R2": None, "enge_R3": None,
-            },
-            "By": {
-                "enge_L1": None, "enge_L2": None, "enge_L3": None,
-                "sines": None,
-                "enge_R1": None, "enge_R2": None, "enge_R3": None,
-            },
-            "Bs": {
-                "enge_L1": None, "enge_L2": None, "enge_L3": None,
-                "sines": None,
-                "enge_R1": None, "enge_R2": None, "enge_R3": None,
-            },
-        }
+        self.fit_pars = {"Bx" : {}, "By" : {}, "Bs" : {}}
 
 
     # PUBLIC
@@ -97,7 +83,7 @@ class Wiggler:
             self._filter_noise()
         self._find_regions()
         self._fit_sinusoids()
-        self._fit_enge()
+        self._fit_edges()
 
 
 
@@ -126,28 +112,6 @@ class Wiggler:
             y += A1 * np.cos(k * x) + A2 * np.sin(k * x)
 
         return y
-
-    # PRIVATE
-    # This function evaluates an Enge function at the given x values.
-    # The parameters are given as a list:
-    #  - Amplitude
-    #  - Coefficients of the polynomial in the exponent, starting from the constant term
-    # Thus, for a polynomial of degree n, the parameter list has length n+2
-    @staticmethod
-    def _enge_function(x, y_off, amp, poly):
-        return y_off + amp * expit(-poly(x))
-
-    # PRIVATE
-    # This function is a numerically safe logarithm, which is used in the inverse of the Enge function.
-    @staticmethod
-    def _inv_enge(y, A):
-        """
-        Numerically safe log(A/y - 1). Assumes y_pos has already been shifted positive.
-        Clips to keep values strictly inside (0, A).
-        """
-        eps = np.finfo(float).eps
-        y = np.clip(y, eps, A * (1.0 - 1e-8))
-        return np.log(A / y - 1.0)
 
 
 
@@ -217,15 +181,9 @@ class Wiggler:
             field_valleys = field_valleys[np.logical_and(field_valleys > w_left, field_valleys < w_right)]
             field_extrema = np.sort(np.concatenate((field_peaks, field_valleys)))
             if not self.der:
-                self.borders_idx[field] = [field_extrema[0], field_extrema[1], field_extrema[2], field_extrema[-3], field_extrema[-2], field_extrema[-1]]
-                self.slices[field] = []
-                for i in range(len(self.borders_idx[field]) - 1):
-                    self.slices[field].append(slice(self.borders_idx[field][i], self.borders_idx[field][i + 1]))
+                self.borders_idx[field] = [field_extrema[3], field_extrema[-4]]
             else:
-                self.borders_idx[field] = [field_extrema[0], field_extrema[1], field_extrema[2], field_extrema[-5], field_extrema[-4], field_extrema[-3]]
-                self.slices[field] = []
-                for i in range(len(self.borders_idx[field]) - 1):
-                    self.slices[field].append(slice(self.borders_idx[field][i], self.borders_idx[field][i + 1]))
+                self.borders_idx[field] = [field_extrema[3], field_extrema[-4]]
 
 
     # PRIVATE
@@ -302,13 +260,13 @@ class Wiggler:
     # It uses the _find_modes function to get initial guesses for the parameters.
     def _fit_sinusoids(self, fun=True):
         for field in ["Bx", "By", "Bs"]:
-            slice = self.slices[field][2]
-            s_reg = self.s_full[slice]
+            sin_slice = slice(self.borders_idx[field][0], self.borders_idx[field][1])
+            s_reg = self.s_full[sin_slice]
 
             if fun:
-                field_reg = self.raw_data[field][slice]
+                field_reg = self.raw_data[field][sin_slice]
             else:
-                field_reg = self.trans_der2[field][slice]
+                field_reg = self.trans_der2[field][sin_slice]
 
             n_modes = self.shapes[field]["n_modes"]
 
@@ -325,35 +283,60 @@ class Wiggler:
 
             if fun:
                 self.fit_pars[field]["sines"] = popt
-                self.fit_data[field][slice] = self._sinusoid(s_reg, *popt)
+                self.fit_data[field][sin_slice] = self._sinusoid(s_reg, *popt)
             else:
                 self.der2_fit_pars[field]["sines"] = popt
-                self.fit_der2[field][slice] = self._sinusoid(s_reg, *popt)
+                self.fit_der2[field][sin_slice] = self._sinusoid(s_reg, *popt)
 
     ####################################################################################################################
     # PIECEWISE POLYNOMIAL FITTING
     ####################################################################################################################
 
-    """
-    def _boundary_from_sine(self, z_mid: np.ndarray, sine: SineModel) -> np.ndarray:
-        xL, xR = z_mid[0] - self.dz, z_mid[-1] + self.dz
+    # PRIVATE
+    # Takes the fit parameters from the sinusoidal fit
+    # and computes the boundary conditions for the polynomial fits
+    # fL, fR are the function values at the left and right boundaries
+    # dL, dR are the first derivatives at the left and right boundaries
+    # ddL, ddR are the second derivatives at the left and right boundaries
+    def _boundary_from_sine(self, field, s_mid):
+        """
+        Compute boundary conditions at the left/right ends of the CENTER sinusoid region
+        for the given field. Returns [fL, fR, dL, dR, ddL, ddR].
+        """
+        assert self.fit_pars[field]["sines"] is not None, \
+            f"No sine parameters stored for {field}. Did _fit_sinusoids run?"
+
+        params = self.fit_pars[field]["sines"]
+        xL = float(s_mid[0])
+        xR = float(s_mid[-1])
+
         fL = fR = dL = dR = ddL = ddR = 0.0
-        for A1, A2, k in zip(sine.Acos, sine.Asin, sine.k):
-            fL += A1*np.cos(k*xL) + A2*np.sin(k*xL)
-            fR += A1*np.cos(k*xR) + A2*np.sin(k*xR)
-            dL += k*(A2*np.cos(k*xL) - A1*np.sin(k*xL))
-            dR += k*(A2*np.cos(k*xR) - A1*np.sin(k*xR))
-            ddL += -k*k*(A1*np.cos(k*xL) + A2*np.sin(k*xL))
-            ddR += -k*k*(A1*np.cos(k*xR) + A2*np.sin(k*xR))
+        for A_cos, A_sin, k in zip(params[0::3], params[1::3], params[2::3]):
+            # f
+            fL += A_cos * np.cos(k * xL) + A_sin * np.sin(k * xL)
+            fR += A_cos * np.cos(k * xR) + A_sin * np.sin(k * xR)
+            # f'
+            dL += -A_cos * k * np.sin(k * xL) + A_sin * k * np.cos(k * xL)
+            dR += -A_cos * k * np.sin(k * xR) + A_sin * k * np.cos(k * xR)
+            # f''
+            ddL += -(k ** 2) * (A_cos * np.cos(k * xL) + A_sin * np.sin(k * xL))
+            ddR += -(k ** 2) * (A_cos * np.cos(k * xR) + A_sin * np.sin(k * xR))
+
         return np.array([fL, fR, dL, dR, ddL, ddR], dtype=float)
 
-    def _boundary_from_poly(self, z_prev: np.ndarray, poly: Polynomial) -> np.ndarray:
-        xL, xR = z_prev[0] - self.dz, z_prev[-1] + self.dz
+    # PRIVATE
+    # This method computes the boundary conditions from a previously fitted polynomial.
+    # xL, xR are the left and right boundaries of the new region.
+    # dp and ddp are the first and second derivatives of the polynomial.
+    def _boundary_from_poly(self, s_prev, poly):
+        xL, xR = s_prev[0] - self.ds, s_prev[-1] + self.ds
         dp, ddp = poly.deriv(), poly.deriv(2)
         return np.array([poly(xL), poly(xR), dp(xL), dp(xR), ddp(xL), ddp(xR)], dtype=float)
 
+    # PRIVATE
+    # This slices a region into num_regions slices of (approximately) equal size.
     @staticmethod
-    def _balanced_slices(n: int, num_regions: int) -> list[slice]:
+    def _balanced_slices(n, num_regions):
         base, rem = n // num_regions, n % num_regions
         slices, start = [], 0
         for i in range(num_regions):
@@ -363,309 +346,129 @@ class Wiggler:
             start = end
         return slices
 
-    def _fit_poly_side(self, z_region, b_region, z_sines, sine, num_slices, left_side):
-        deg = self.degree
-        slices = self._balanced_slices(len(z_region), num_slices)
-        if left_side:
-            slices = list(reversed(slices))
-        fit_reg = np.zeros_like(z_region, dtype=float)
+    def _fit_poly_side(self, field, deg, s_region, b_region, s_mid, num_slices, left_side):
+        slices = self._balanced_slices(len(s_region), num_slices)
+        # fit order: first piece next to the center, then outward
+        slices_proc = list(reversed(slices)) if left_side else slices
+
+        fit_reg = np.zeros_like(s_region, dtype=float)
         pieces = []
         prev_poly = None
-        prev_z = None
-        for ix, s in enumerate(slices):
-            z_this, b_this = z_region[s], b_region[s]
-            boundaries = self._boundary_from_sine(z_sines, sine) if ix == 0 else self._boundary_from_poly(prev_z, prev_poly)
+        prev_s = None
+
+        for ix, s in enumerate(slices_proc):
+            s_this, b_this = s_region[s], b_region[s]
+            if ix == 0:
+                boundaries = self._boundary_from_sine(field, s_mid)
+            else:
+                boundaries = self._boundary_from_poly(prev_s, prev_poly)
+
+            # ---- same constrained poly_fit logic you already have ----
             if deg >= 5:
                 if left_side:
-                    dbL = (-3 * b_this[0] + 4 * b_this[1] - b_this[2]) / (2 * self.dz)
-                    d2L = (2 * b_this[0] - 5 * b_this[1] + 4 * b_this[2] - b_this[3]) / (self.dz ** 2)
-                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
-                                               x0=[z_this[0], z_this[-1]], y0=[b_this[0], boundaries[0]],
-                                               xp0=[z_this[0], z_this[-1]], yp0=[dbL, boundaries[2]],
-                                               xpp0=[z_this[0], z_this[-1]], ypp0=[d2L, boundaries[4]])
+                    dbL = (-3 * b_this[0] + 4 * b_this[1] - b_this[2]) / (2 * self.ds)
+                    d2L = (2 * b_this[0] - 5 * b_this[1] + 4 * b_this[2] - b_this[3]) / (self.ds ** 2)
+                    coeffs = poly_fit.poly_fit(
+                        N=deg, xdata=s_this, ydata=b_this,
+                        x0=[s_this[0], s_this[-1]], y0=[b_this[0], boundaries[0]],
+                        xp0=[s_this[0], s_this[-1]], yp0=[dbL, boundaries[2]],
+                        xpp0=[s_this[0], s_this[-1]], ypp0=[d2L, boundaries[4]]
+                    )
                 else:
-                    dbR = (3 * b_this[-1] - 4 * b_this[-2] + b_this[-3]) / (2 * self.dz)
-                    d2R = (2 * b_this[-1] - 5 * b_this[-2] + 4 * b_this[-3] - b_this[-4]) / (self.dz ** 2)
-                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
-                                               x0=[z_this[0], z_this[-1]], y0=[boundaries[1], b_this[-1]],
-                                               xp0=[z_this[0], z_this[-1]], yp0=[boundaries[3], dbR],
-                                               xpp0=[z_this[0], z_this[-1]], ypp0=[boundaries[5], d2R])
+                    dbR = (3 * b_this[-1] - 4 * b_this[-2] + b_this[-3]) / (2 * self.ds)
+                    d2R = (2 * b_this[-1] - 5 * b_this[-2] + 4 * b_this[-3] - b_this[-4]) / (self.ds ** 2)
+                    coeffs = poly_fit.poly_fit(
+                        N=deg, xdata=s_this, ydata=b_this,
+                        x0=[s_this[0], s_this[-1]], y0=[boundaries[1], b_this[-1]],
+                        xp0=[s_this[0], s_this[-1]], yp0=[boundaries[3], dbR],
+                        xpp0=[s_this[0], s_this[-1]], ypp0=[d2R, boundaries[5]]
+                    )
             elif deg >= 3:
                 if left_side:
-                    dbL = (-3 * b_this[0] + 4 * b_this[1] - b_this[2]) / (2 * self.dz)
-                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
-                                               x0=[z_this[0], z_this[-1]], y0=[b_this[0], boundaries[0]],
-                                               xp0=[z_this[0], z_this[-1]], yp0=[dbL, boundaries[2]])
+                    dbL = (-3 * b_this[0] + 4 * b_this[1] - b_this[2]) / (2 * self.ds)
+                    coeffs = poly_fit.poly_fit(
+                        N=deg, xdata=s_this, ydata=b_this,
+                        x0=[s_this[0], s_this[-1]], y0=[b_this[0], boundaries[0]],
+                        xp0=[s_this[0], s_this[-1]], yp0=[dbL, boundaries[2]]
+                    )
                 else:
-                    dbR = (3 * b_this[-1] - 4 * b_this[-2] + b_this[-3]) / (2 * self.dz)
-                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
-                                               x0=[z_this[0], z_this[-1]], y0=[boundaries[1], b_this[-1]],
-                                               xp0=[z_this[0], z_this[-1]], yp0=[boundaries[3], dbR])
+                    dbR = (3 * b_this[-1] - 4 * b_this[-2] + b_this[-3]) / (2 * self.ds)
+                    coeffs = poly_fit.poly_fit(
+                        N=deg, xdata=s_this, ydata=b_this,
+                        x0=[s_this[0], s_this[-1]], y0=[boundaries[1], b_this[-1]],
+                        xp0=[s_this[0], s_this[-1]], yp0=[boundaries[3], dbR]
+                    )
             else:
                 if left_side:
-                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
-                                               x0=[z_this[0], z_this[-1]], y0=[b_this[0], boundaries[0]])
+                    coeffs = poly_fit.poly_fit(
+                        N=deg, xdata=s_this, ydata=b_this,
+                        x0=[s_this[0], s_this[-1]], y0=[b_this[0], boundaries[0]]
+                    )
                 else:
-                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
-                                               x0=[z_this[0], z_this[-1]], y0=[boundaries[1], b_this[-1]])
+                    coeffs = poly_fit.poly_fit(
+                        N=deg, xdata=s_this, ydata=b_this,
+                        x0=[s_this[0], s_this[-1]], y0=[boundaries[1], b_this[-1]]
+                    )
+            # ----------------------------------------------------------
+
             poly = Polynomial(coeffs)
-            fit_reg[s] = poly(z_this)
-            prev_poly, prev_z = poly, z_this
+            fit_reg[s] = poly(s_this)
             pieces.append((s.start, poly))
-        return fit_reg, pieces
+            prev_poly, prev_s = poly, s_this
 
-    def _fit_edges(self) -> None:
-        z = self.z_full
-        for c in self.COMPONENTS:
-            ch = self.fields[c]
-            i0, i1 = ch.borders_idx
-            z_left, b_left = z[:i0], ch.data[:i0]
-            z_right, b_right = z[i1:], ch.data[i1:]
-            z_mid = z[i0:i1]
-            ns_left, ns_right = self.slice_counts[c]["left"], self.slice_counts[c]["right"]
-            fitL, piecesL = self._fit_poly_side(z_left, b_left, z_mid, ch.sine, ns_left, True)
-            fitR, piecesR = self._fit_poly_side(z_right, b_right, z_mid, ch.sine, ns_right, False)
-            ch.left.set_pieces([p[0] for p in piecesL], [p[1] for p in piecesL])
-            ch.right.set_pieces([i1 + p[0] for p in piecesR], [p[1] for p in piecesR])
-            ch.fit = np.zeros_like(ch.data, dtype=float)
-            ch.fit[:i0] = fitL
-            ch.fit[i1:] = fitR
-    
-        def tune_slices_for_zero_integral(self, field="all", left_candidates=None, right_candidates=None, tradeoff_mse=0.0, verbose=None):
-        if verbose is None:
-            verbose = self.verbose
-        self._ensure("data", "borders", "sines")
-        def _score(y_fit, y_data, z):
-            I = sc.integrate.cumulative_trapezoid(y_fit, x=z, initial=0.0)
-            I_end = I[-1]
-            if tradeoff_mse:
-                mse = np.mean((y_fit - y_data) ** 2)
-                return abs(I_end) + tradeoff_mse * mse, I_end, mse
-            return abs(I_end), I_end, None
-        def _tune_one(name: str):
-            ch = self.fields[name]; z = self.z_full; i0, i1 = ch.borders_idx
-            z_left, b_left, z_right, b_right = z[:i0], ch.data[:i0], z[i1:], ch.data[i1:]
-            z_mid = z[i0:i1]
-            Ls = range(max(2, self.slice_counts[name]["left"] - 8), self.slice_counts[name]["left"] + 9) if left_candidates is None else list(left_candidates)
-            Rs = range(max(2, self.slice_counts[name]["right"] - 8), self.slice_counts[name]["right"] + 9) if right_candidates is None else list(right_candidates)
-            best = None
-            for L in Ls:
-                for R in Rs:
-                    fitL, piecesL = self._fit_poly_side(z_left, b_left, z_mid, ch.sine, L, True)
-                    fitR, piecesR = self._fit_poly_side(z_right, b_right, z_mid, ch.sine, R, False)
-                    y_fit = np.zeros_like(ch.data, dtype=float)
-                    y_fit[:i0] = fitL; y_fit[i1:] = fitR
-                    mid_mask = (z >= z[i0]) & (z <= z[i1 - 1])
-                    y_fit[mid_mask] = ch.sine.eval(z[mid_mask])
-                    score, I_end, mse = _score(y_fit, ch.data, z)
-                    if best is None or score < best["score"]:
-                        best = {"score": score, "I_end": I_end, "mse": mse, "L": L, "R": R,
-                                "fit": y_fit, "piecesL": piecesL, "piecesR": piecesR}
-            if verbose:
-                msg = f"[{name}] best slices: left={best['L']} right={best['R']} |I_end|={abs(best['I_end']):.3e}"
-                if tradeoff_mse and best["mse"] is not None:
-                    msg += f"  mse={best['mse']:.3e}"
-                print(msg)
-            ch.fit = best["fit"]
-            ch.left.set_pieces([p[0] for p in best["piecesL"]], [p[1] for p in best["piecesL"]])
-            ch.right.set_pieces([i1 + p[0] for p in best["piecesR"]], [p[1] for p in best["piecesR"]])
-            self.slice_counts[name]["left"], self.slice_counts[name]["right"] = best["L"], best["R"]
-        targets = [field] if field in self.COMPONENTS else (["Bx", "By"] if field == "both" else list(self.COMPONENTS))
-        for name in targets:
-            _tune_one(name)
-        self._merge_sections(); self._compute_primitives()
-    """
+        # borders in strictly increasing s on this side
+        slices_ord = sorted(slices, key=lambda sl: sl.stop)
+        borders = [float(s_region[0])] + [float(s_region[sl.stop - 1]) for sl in slices_ord]
+        return fit_reg, pieces, borders
 
-
-    ####################################################################################################################
-    # ENGE FITTING
-    ####################################################################################################################
-    # TODO: The method below works, but need to look if it can be tidied up.
-
-    # PRIVATE
-    # This method:
-    #  - rescales x to lie between -1 and 1
-    # Returns:
-    #  - The rescaled x, defined as u
-    #  - The polynomial that performs the rescaling
-    @staticmethod
-    def _rescale_x_for_enge(x):
-        x_min = np.min(x)
-        x_max = np.max(x)
-
-        # Convert to u in [-1, 1]
-        # Coefficients for linear transformation
-        c_u0 = -(x_min + x_max) / (x_max - x_min)
-        c_u1 = 2 / (x_max - x_min)
-        poly_u = Polynomial([c_u0, c_u1])
-        u = poly_u(x)
-
-        return x_min, x_max, u, poly_u
-
-    # PRIVATE
-    # This method rescales y to be positive if necessary.
-    # This is necessary to make sure that the logarithm is well-defined.
-    @staticmethod
-    def _rescale_y_for_enge(y):
-        y_min = np.min(y)
-
-        if y_min <= 0:
-            y = y - y_min + 0.1
-
-        return y
-
-    from numpy.polynomial import Polynomial
-    import numpy as np
-
-    def _fit_polynomial(self, u, y_pos, A, deg):
+    def _fit_edges(self):
         """
-        Fit P(u) in monomial basis on u∈[-1,1] without covariance.
-        Uses Polynomial.fit (no cov_x path), safe logit & finite masking.
+        Fit the left/right regions (outside the central sinusoid) with chained polynomials
+        that connect to the CENTER with value/derivative continuity constraints.
+
+        If `field` is None, fit all fields ("Bx","By","Bs"). Otherwise fit only the given field.
+
+        Stores:
+          - self.fit_data[fld] on the tails
+          - self.fit_pars[fld]["enge_L"] and ["enge_R"] as LISTS of coefficient arrays (ascending powers)
         """
-        t = self._inv_enge(y_pos, A)
-        m = np.isfinite(u) & np.isfinite(t)
-        u_m, t_m = u[m], t[m]
-        if u_m.size == 0:
-            return Polynomial([0.0]).convert(domain=[-1, 1], window=[-1, 1])
 
-        deg_eff = int(min(deg, max(0, u_m.size - 1)))
-        poly_u = Polynomial.fit(u_m, t_m, deg=deg_eff, domain=[-1, 1], window=[-1, 1])
-        return poly_u.convert(kind=Polynomial, domain=[-1, 1], window=[-1, 1])
-
-    # PRIVATE
-    # This method computes the error for a given A value.
-    # It first calculates an array of y, named yhat.
-    # Then, it rescales A such that yhat matches y0, which is derived from the sinusoid fit.
-    # Then, it recomputes yhat with the rescaled A.
-    # This should return a fit that matches the y-value of the sinusoid fit at the border.
-    def _error_for_A(self, y_off, A, x, y, y0, enge_side, deg=15):
-        poly = self._fit_polynomial(x, y, A, deg=deg)
-        y_hat = self._enge_function(x, y_off, A, poly)
-        if enge_side == "enge_deg_L":
-            A *= y0 / y_hat[-1]
-        elif enge_side == "enge_deg_R":
-            A *= y0 / y_hat[0]
-        y_hat = self._enge_function(x, y_off, A, poly)
-        return np.sum((y - y_hat) ** 2)
-
-    # PRIVATE
-    # This method fits Enge functions to the data in the regions defined by borders_idx.
-    # The fitted parameters are stored in the fit_pars attribute.
-    # The fitted data is stored in the fit_data attribute.
-    # It uses the _fit_polynomial and _error_for_A functions to find the best fit.
-    # TODO: It's not perfect yet. It might be nice to include a function that optimizes the degree of the polynomial.
-    # TODO: That's similar to what we did before with the number of slices in the polynomial chain.
-    # TODO: Note that now, we have four polynomials of order ~20, instead of ~20 polynomials of order 3.
-    # TODO: So this is a good improvement, I'd say.
-    def _fit_enge(self):
-        """
-        Fit three Enge pieces on each side, using your six borders and central sine slice:
-
-        Left:  L1 = [:b0], L2 = [b0:b1], L3 = [b1:b2]  (L3 joins the center at b2)
-        Right: R1 = [b3:b4], R2 = [b4:b5], R3 = [b5:]  (R1 joins the center at b3)
-
-        For each piece we:
-          - shift y positive (same shift used to match the border value),
-          - scale s -> u in [-1,1],
-          - scan A, fit P(u) in u, then write back and store params + u-map.
-        """
         for field in ["Bx", "By", "Bs"]:
-            b = self.borders_idx[field]  # [b0,b1,b2,b3,b4,b5]
-            b0, b1, b2, b3, b4, b5 = b
+            # center region slice and grid
+            i0, i1 = self.borders_idx[field]
+            mid_sl = slice(i0, i1)
+            s_mid = self.s_full[mid_sl]
 
-            # convenience
-            def deg(side):
-                return int(self.shapes[field][side])
+            # tails
+            s_left = self.s_full[:i0]
+            s_right = self.s_full[i1:]
+            b_left = self.raw_data[field][:i0]
+            b_right = self.raw_data[field][i1:]
 
-            # general slice fitter that matches to target value at the INNER border
-            def fit_one_slice(s_sl, y_sl, y_target, side_key):
-                # positivity shift
-                b_min = float(np.min(y_sl))
-                shift = (-b_min + 0.1) if (b_min <= 0) else 0.0
-                y_tail = y_sl + shift
-                y0 = float(y_target) + shift
+            # degrees + number of chained pieces per side (configurable)
+            degL = int(self.shapes[field]["poly_deg_L"])
+            degR = int(self.shapes[field]["poly_deg_R"])
+            nL = max(1, int(self.shapes[field].get("n_pieces_L", 3)))
+            nR = max(1, int(self.shapes[field].get("n_pieces_R", 3)))
 
-                # s -> u in [-1,1]
-                _, _, u, poly_u_lin = self._rescale_x_for_enge(s_sl)
-                c0, c1 = map(float, poly_u_lin.coef)
+            nL = min(nL, max(1, len(s_left)))
+            fitL, piecesL, bordersL = self._fit_poly_side(field, degL, s_left, b_left, s_mid, nL, left_side=True)
+            self.fit_data[field][:i0] = fitL
 
-                # pick degree by side
-                d = deg("enge_deg_L" if side_key.startswith("L") else "enge_deg_R")
+            nR = min(nR, max(1, len(s_right)))
+            fitR, piecesR, bordersR = self._fit_poly_side(field, degR, s_right, b_right, s_mid, nR, left_side=False)
+            self.fit_data[field][i1:] = fitR
 
-                # scan A and measure SSE after re-matching the border (in shifted space)
-                ymax = float(np.max(y_tail))
-                A_scan = np.linspace(ymax * 1.01, ymax * 3.0, 100)
-                errs = [
-                    self._error_for_A(shift, A, u, y_tail, y0=y0,
-                                      enge_side=("enge_deg_L" if side_key.startswith("L") else "enge_deg_R"),
-                                      deg=d)
-                    for A in A_scan
-                ]
-                A_best = float(A_scan[int(np.argmin(errs))])
+            # after computing fitL/piecesL and fitR/piecesR:
+            self.fit_data[field][:i0] = fitL
+            self.fit_data[field][i1:] = fitR
 
-                # fit polynomial in u with chosen A
-                poly_u = self._fit_polynomial(u, y_tail, A_best, deg=d)
-                y_fit_u = self._enge_function(u, -shift, A_best, poly_u)
+            # NEW: store coefficients (ascending-power) for exporter
+            self.fit_pars[field]["enge_L"] = [p[1].coef for p in piecesL]  # order: near-center -> far-left
+            self.fit_pars[field]["enge_R"] = [p[1].coef for p in piecesR]  # order: near-center -> far-right
 
-                pars = [-shift, A_best, *[float(c) for c in poly_u.coef]]
-                u_map = [c0, c1]
-                return y_fit_u, pars, u_map
-
-            # ----- LEFT side (outer -> inner order depends on continuity target) -----
-            # Inner-left L3: [b1:b2], match to sine at b2
-            sL3 = self.s_full[b1:b2 + 1]
-            yL3 = self.raw_data[field][b1:b2 + 1]
-            y_join_L3 = self.fit_data[field][b2]  # sine value at inner border
-            y_fit, pars, u_map = fit_one_slice(sL3, yL3, y_join_L3, "L3")
-            self.fit_data[field][b1:b2 + 1] = y_fit
-            self.fit_pars[field]["enge_L3"] = pars
-            self.fit_pars[field]["enge_L3_u_map"] = u_map
-
-            # Middle-left L2: [b0:b1], match to L3 at b1
-            sL2 = self.s_full[b0:b1 + 1]
-            yL2 = self.raw_data[field][b0:b1 + 1]
-            y_join_L2 = self.fit_data[field][b1]
-            y_fit, pars, u_map = fit_one_slice(sL2, yL2, y_join_L2, "L2")
-            self.fit_data[field][b0:b1 + 1] = y_fit
-            self.fit_pars[field]["enge_L2"] = pars
-            self.fit_pars[field]["enge_L2_u_map"] = u_map
-
-            # Outer-left L1: [:b0], match to L2 at b0
-            sL1 = self.s_full[:b0 + 1]
-            yL1 = self.raw_data[field][:b0 + 1]
-            y_join_L1 = self.fit_data[field][b0]
-            y_fit, pars, u_map = fit_one_slice(sL1, yL1, y_join_L1, "L1")
-            self.fit_data[field][:b0 + 1] = y_fit
-            self.fit_pars[field]["enge_L1"] = pars
-            self.fit_pars[field]["enge_L1_u_map"] = u_map
-
-            # ----- RIGHT side -----
-            # Inner-right R1: [b3:b4], match to sine at b3
-            sR1 = self.s_full[b3:b4 + 1]
-            yR1 = self.raw_data[field][b3:b4 + 1]
-            y_join_R1 = self.fit_data[field][b3]
-            y_fit, pars, u_map = fit_one_slice(sR1, yR1, y_join_R1, "R1")
-            self.fit_data[field][b3:b4 + 1] = y_fit
-            self.fit_pars[field]["enge_R1"] = pars
-            self.fit_pars[field]["enge_R1_u_map"] = u_map
-
-            # Middle-right R2: [b4:b5], match to R1 at b4
-            sR2 = self.s_full[b4:b5 + 1]
-            yR2 = self.raw_data[field][b4:b5 + 1]
-            y_join_R2 = self.fit_data[field][b4]
-            y_fit, pars, u_map = fit_one_slice(sR2, yR2, y_join_R2, "R2")
-            self.fit_data[field][b4:b5 + 1] = y_fit
-            self.fit_pars[field]["enge_R2"] = pars
-            self.fit_pars[field]["enge_R2_u_map"] = u_map
-
-            # Outer-right R3: [b5:], match to R2 at b5
-            sR3 = self.s_full[b5:]
-            yR3 = self.raw_data[field][b5:]
-            y_join_R3 = self.fit_data[field][b5]
-            y_fit, pars, u_map = fit_one_slice(sR3, yR3, y_join_R3, "R3")
-            self.fit_data[field][b5:] = y_fit
-            self.fit_pars[field]["enge_R3"] = pars
-            self.fit_pars[field]["enge_R3_u_map"] = u_map
+            # existing border assembly (kept)
+            self.poly_borders[field] = bordersL + [float(self.s_full[i0]), float(self.s_full[i1])] + bordersR[1:]
 
     ####################################################################################################################
     # TRANSVERSE GRADIENTS
@@ -703,116 +506,90 @@ class Wiggler:
     # STRINGS FOR BPMETH
     ####################################################################################################################
 
-    @staticmethod
-    def _poly_str(coeffs):
+    def _num(self, x, p=12):
+        return f"{float(x):.{p}g}"
+
+    def _poly_to_sympy(self, coeffs, var="s", p=12):
         terms = []
-        for i, a in enumerate(coeffs):
-            if i == 0:
-                terms.append(f"({a})")
-            elif i == 1:
-                terms.append(f"({a})*s")
+        for n, c in enumerate(coeffs):
+            if c == 0:
+                continue
+            if n == 0:
+                terms.append(self._num(c, p))
+            elif n == 1:
+                terms.append(f"{self._num(c, p)}*{var}")
             else:
-                terms.append(f"({a})*s**{i}")
+                terms.append(f"{self._num(c, p)}*{var}**{n}")
         return " + ".join(terms) if terms else "0"
 
-    def _enge_str(self, enge_pars):
-        """enge_pars = [A, a0, a1, ..., aN]; Enge(s) = A * expit(-P_N(s)) = A/(1+exp(P_N(s)))."""
+    def _sines_to_sympy(self, params, var="s", p=12):
+        # params: [Acos1, Asin1, k1, Acos2, Asin2, k2, ...]
+        parts = []
+        for Ac, As, k in zip(params[0::3], params[1::3], params[2::3]):
+            parts.append(f"{self._num(Ac, p)}*cos({self._num(k, p)}*{var}) + "
+                         f"{self._num(As, p)}*sin({self._num(k, p)}*{var})")
+        return " + ".join(parts) if parts else "0"
 
-        # Extract Enge parameters from self.fit_pars
+    def export_piecewise_sympy(self, field="By", precision=12):
+        i0, i1 = self.borders_idx[field]
+        s = self.s_full
+        sL, sR = s[:i0], s[i1:]
+        s_min, s_max = float(s[0]), float(s[-1])
+        center_right = float(s[i1 - 1]) if i1 > i0 else float(s[i0])
 
-        y_off, A, *poly = enge_pars
-        P = self._poly_str(poly)
-        return f"{y_off} + ({A})/(1+exp(({P})))"
+        # polynomials (ascending-power coeffs), order them from left->center and center->right
+        L_coeffs = list(self.fit_pars[field]["enge_L"]) if "enge_L" in self.fit_pars[field] else []
+        R_coeffs = list(self.fit_pars[field]["enge_R"]) if "enge_R" in self.fit_pars[field] else []
+        # left list was fitted starting near center; reverse so it's leftmost..center
+        L_coeffs = list(reversed(L_coeffs))
 
-    @staticmethod
-    def _sines_str(sine_pars):
-        """
-        sine_pars laid out as [A_cos1, A_sin1, k1, A_cos2, A_sin2, k2, ...].
-        Returns sum_i (A_cosi*cos(k_i*s) + A_sini*sin(k_i*s)).
-        """
+        # boundaries from the same slicing logic used in fitting
+        nL = len(L_coeffs)
+        nR = len(R_coeffs)
 
-        terms = []
-        for i in range(0, len(sine_pars), 3):
-            Aci, Asi, ki = sine_pars[i:i + 3]
-            terms.append(f"({Aci})*cos(({ki})*s) + ({Asi})*sin(({ki})*s)")
-        return " + ".join(terms)
+        bordersL = []
+        if nL > 0 and len(sL) > 0:
+            slL = self._balanced_slices(len(sL), nL)
+            bordersL = [float(sL[sl.stop - 1]) for sl in slL]  # increasing, last ~ s[i0-1]
 
-    import sympy as sp
+        bordersR = []
+        if nR > 0 and len(sR) > 0:
+            slR = self._balanced_slices(len(sR), nR)
+            bordersR = [float(sR[sl.stop - 1]) for sl in slR]  # increasing, last == s[-1]
 
-    def export_piecewise_string(self, component: str, sig=10, tol=1e-14):
-        pars = self.fit_pars[component]
+        # build piecewise tuples: (expr, cond)
+        pieces = []
 
-        fmtC = lambda x: f"{float(x):.{sig}g}"
+        # left pieces
+        prev = s_min
+        for j, cf in enumerate(L_coeffs):
+            end = bordersL[j]
+            expr = self._poly_to_sympy(cf, "s", precision)
+            cond = f"And({"s"} >= {self._num(prev, precision)}, {"s"} <= {self._num(end, precision)})"
+            pieces.append(f"({expr}, {cond})")
+            prev = end
 
-        def poly_sum_u(coeffs_u, c0, c1):
-            u = f"(({fmtC(c0)}) + ({fmtC(c1)})*s)"
-            terms = []
-            for k, ak in enumerate(coeffs_u):
-                ak = fmtC(ak)
-                if k == 0:
-                    terms.append(f"({ak})")
-                elif k == 1:
-                    terms.append(f"({ak})*{u}")
-                else:
-                    terms.append(f"({ak})*{u}**{k}")
-            return " + ".join(terms) if terms else "0"
+        # center sinusoid
+        sine_params = self.fit_pars[field].get("sines", [])
+        if i1 > i0 and len(sine_params):
+            start_c = bordersL[-1] if bordersL else float(s[i0 - 1]) if i0 > 0 else s_min
+            expr_c = self._sines_to_sympy(sine_params, "s", precision)
+            cond_c = f"And({"s"} > {self._num(start_c, precision)}, {"s"} <= {self._num(center_right, precision)})"
+            pieces.append(f"({expr_c}, {cond_c})")
 
-        def enge_piece(key):
-            pk = pars.get(key)
-            y0, A, *au = pk
-            c0, c1 = pars.get(f"{key}_u_map")
-            P = poly_sum_u(au, c0, c1)
-            return f"({fmtC(y0)}) + ({fmtC(A)})*(1 - tanh(({P})/2))/2"
+        # right pieces
+        prev = center_right
+        for j, cf in enumerate(R_coeffs):
+            end = bordersR[j]
+            expr = self._poly_to_sympy(cf, "s", precision)
+            cond = f"And({"s"} > {self._num(prev, precision)}, {"s"} <= {self._num(end, precision)})"
+            pieces.append(f"({expr}, {cond})")
+            prev = end
 
-        def sines_expr():
-            a = pars.get("sines", [])
-            terms = []
-            for i in range(0, len(a), 3):
-                c_amp, s_amp, k = a[i:i + 3]
-                terms.append(f"({fmtC(c_amp)})*cos(({fmtC(k)})*s)")
-                terms.append(f"({fmtC(s_amp)})*sin(({fmtC(k)})*s)")
-            return " + ".join(terms) if terms else "0"
+        return "Piecewise(" + ", ".join(pieces) + ")"
 
-        # --- boundaries (FULL precision) ---
-        b0, b1, b2, b3, b4, b5 = self.borders_idx[component]
-        s0, s1, s2, s3, s4, s5 = (self.s_full[i] for i in (b0, b1, b2, b3, b4, b5))
-
-        # --- pieces as strings ---
-        L1_s = enge_piece("enge_L1")
-        L2_s = enge_piece("enge_L2")
-        L3_s = enge_piece("enge_L3")
-        C_s = sines_expr()
-        R1_s = enge_piece("enge_R1")
-        R2_s = enge_piece("enge_R2")
-        R3_s = enge_piece("enge_R3")
-
-        # Turn strings into Sympy expressions ONCE
-        s = sp.symbols("s")
-        locals_map = {"s": s}  # exp/sin/cos are known to sympify already
-        L1 = sp.sympify(L1_s, locals=locals_map)
-        L2 = sp.sympify(L2_s, locals=locals_map)
-        L3 = sp.sympify(L3_s, locals=locals_map)
-        C = sp.sympify(C_s, locals=locals_map)
-        R1 = sp.sympify(R1_s, locals=locals_map)
-        R2 = sp.sympify(R2_s, locals=locals_map)
-        R3 = sp.sympify(R3_s, locals=locals_map)
-
-        # If your cut points are floats/np floats, this is fine
-        s0, s1, s2, s3, s4, s5 = map(sp.sympify, [s0, s1, s2, s3, s4, s5])
-
-        expr = sp.Piecewise(
-            (L1, s < s0),
-            (L2, (s >= s0) & (s < s1)),
-            (L3, (s >= s1) & (s < s2)),
-            (C, (s >= s2) & (s < s3)),
-            (R1, (s >= s3) & (s < s4)),
-            (R2, (s >= s4) & (s < s5)),
-            (R3, s >= s5)
-        )
-
-        separate = [L1, L2, L3, C, R1, R2, R3]
-
-        return expr, separate
+    def export_all_piecewise_sympy(self, precision=12):
+        return {fld: self.export_piecewise_sympy(fld, precision) for fld in ["Bx", "By", "Bs"]}
 
     ####################################################################################################################
     # PLOTTING

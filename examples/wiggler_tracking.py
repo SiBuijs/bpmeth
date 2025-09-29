@@ -37,14 +37,14 @@ Test_Wiggler = Wiggler(file_path='example_data/knot_map_test.txt',
                        ds=dz,
                        peak_window=(99, 2100),
                        n_modes=[3, 3, 1],
-                       enge_deg=[[8, 5], [5, 5], [5, 5]],
+                       poly_deg=[[8, 5], [5, 5], [5, 5]],
                        der=False
-)
+                       )
 
 Test_Wiggler.set()
-#Test_Wiggler.plot_fields()
+Test_Wiggler.plot_fields()
 #Test_Wiggler.plot_integrated_fields()
-
+prrrr
 print("DERIVATIVES:")
 Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
                            xy_point=(0, 0),
@@ -52,11 +52,11 @@ Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
                            dy=dz,
                            ds=dz,
                            n_modes=[6, 4, 1],
-                           enge_deg=[[8, 5], [8, 10], [5, 5]],
+                           poly_deg=[[8, 5], [8, 10], [5, 5]],
                            peak_window=(99, 2100),
                            der=True,
                            filter_params=(None, 2090, 7, 11, 3)
-)
+                           )
 
 Test_Wiggler_Der.set()
 #Test_Wiggler_Der.plot_fields()

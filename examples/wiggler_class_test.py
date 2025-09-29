@@ -1,9 +1,7 @@
 from wiggler_class import Wiggler
-from scipy import signal
 import bpmeth as bp
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.signal import savgol_filter, butter, filtfilt
 
 ########################################################################################################################
 # TEST THE CLASS
@@ -37,12 +35,14 @@ Test_Wiggler = Wiggler(file_path='example_data/knot_map_test.txt',
                        ds=dz,
                        peak_window=(99, 2100),
                        n_modes=[3, 3, 1],
-                       enge_deg=[[8, 5], [5, 5], [5, 5]],
+                       poly_deg=[[4, 4], [4, 4], [4, 4]],
+                       poly_pieces=[[19, 35], [19, 36], [8, 8]],
                        der=False
-)
+                       )
 
 Test_Wiggler.set()
 #Test_Wiggler.plot_fields()
+#Test_Wiggler.plot_integrated_fields()
 
 print("DERIVATIVES:")
 Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
@@ -51,31 +51,31 @@ Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
                            dy=dz,
                            ds=dz,
                            n_modes=[6, 4, 1],
-                           enge_deg=[[8, 5], [8, 10], [5, 5]],
+                           poly_deg=[[4, 4], [4, 4], [4, 4]],
+                           poly_pieces=[[15, 15], [15, 15], [15, 15]],
                            peak_window=(99, 2100),
                            der=True,
                            filter_params=(None, 2090, 7, 11, 3)
-)
+                           )
 
 Test_Wiggler_Der.set()
 #Test_Wiggler_Der.plot_fields()
 
-Bx_string, Cx = Test_Wiggler.export_piecewise_string(component="Bx")
-Bx_der_string, Cx_der = Test_Wiggler_Der.export_piecewise_string(component="Bx")
-By_string, Cy = Test_Wiggler.export_piecewise_string(component="By")
-By_der_string, Cy_der = Test_Wiggler_Der.export_piecewise_string(component="By")
-Bs_string, Cs = Test_Wiggler.export_piecewise_string(component="Bs")
+Bx_string = Test_Wiggler.export_piecewise_sympy(field="Bx")
+Bx_der_string = Test_Wiggler_Der.export_piecewise_sympy(field="Bx")
+By_string = Test_Wiggler.export_piecewise_sympy(field="By")
+By_der_string = Test_Wiggler_Der.export_piecewise_sympy(field="By")
+Bs_string = Test_Wiggler.export_piecewise_sympy(field="Bs")
 
-#print(Test_Wiggler.debug_piece_counts("Bs"))
-#print(Test_Wiggler_Der.debug_piece_counts("Bs"))
-#print(By_string)
-#print(Bs_string)
-#print(Bx_der_string)
-#print(By_der_string)
+print(Bx_string)
+print(By_string)
+print(Bs_string)
+print(Bx_der_string)
+print(By_der_string)
 
 a1 = Bx_string
 b1 = By_string
-bs = Bs_string
+bs = 0#Bs_string
 
 a2 = 0
 b2 = 0
@@ -174,8 +174,9 @@ print("Plotted the fields.\nNow making the Hamiltonian...")
 
 qp0 = [0,0,0,0,0,0]
 length = Test_Wiggler.s_full[-1] - Test_Wiggler.s_full[0]
+s_start = Test_Wiggler.s_full[0]
 start_time = time.time()
-H_wiggler = bp.Hamiltonian(length, curv, wiggler)
+H_wiggler = bp.Hamiltonian(length, curv, wiggler, s_start=s_start)
 end_time = time.time()
 print(f"Time to make the Hamiltonian: {end_time - start_time} seconds")
 
