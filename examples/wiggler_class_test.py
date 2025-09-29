@@ -1,3 +1,5 @@
+from tests.test_black_absorber import test_with_generic_beam
+
 from wiggler_class import Wiggler
 import bpmeth as bp
 import matplotlib.pyplot as plt
@@ -28,7 +30,7 @@ dz = 0.001  # Step size in the z direction for numerical differentiation.
 # n_modes_x: Number of modes in the x direction for fitting the sinusoid.
 # n_modes_y: Number of modes in the y direction for fitting the sinusoid.
 print("FIELDS:")
-Test_Wiggler = Wiggler(file_path='example_data/knot_map_test.txt',
+test_wiggler = Wiggler(file_path='example_data/knot_map_test.txt',
                        xy_point=(0, 0),
                        dx=dz,
                        dy=dz,
@@ -40,12 +42,12 @@ Test_Wiggler = Wiggler(file_path='example_data/knot_map_test.txt',
                        der=False
                        )
 
-Test_Wiggler.set()
-#Test_Wiggler.plot_fields()
-#Test_Wiggler.plot_integrated_fields()
+test_wiggler.set()
+test_wiggler.plot_fields()
+#test_wiggler.plot_integrated_fields()
 
 print("DERIVATIVES:")
-Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
+test_wiggler_der = Wiggler(file_path='example_data/knot_map_test.txt',
                            xy_point=(0, 0),
                            dx=dz,
                            dy=dz,
@@ -58,14 +60,14 @@ Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
                            filter_params=(None, 2090, 7, 11, 3)
                            )
 
-Test_Wiggler_Der.set()
-#Test_Wiggler_Der.plot_fields()
+test_wiggler_der.set()
+#test_wiggler_der.plot_fields()
 
-Bx_string = Test_Wiggler.export_piecewise_sympy(field="Bx")
-Bx_der_string = Test_Wiggler_Der.export_piecewise_sympy(field="Bx")
-By_string = Test_Wiggler.export_piecewise_sympy(field="By")
-By_der_string = Test_Wiggler_Der.export_piecewise_sympy(field="By")
-Bs_string = Test_Wiggler.export_piecewise_sympy(field="Bs")
+Bx_string = test_wiggler.export_piecewise_sympy(field="Bx")
+Bx_der_string = test_wiggler_der.export_piecewise_sympy(field="Bx")
+By_string = test_wiggler.export_piecewise_sympy(field="By")
+By_der_string = test_wiggler_der.export_piecewise_sympy(field="By")
+Bs_string = test_wiggler.export_piecewise_sympy(field="Bs")
 
 print(Bx_string)
 print(By_string)
@@ -122,13 +124,13 @@ cut_idx_L = 4
 cut_idx_R = -5
 slice = slice(cut_idx_L, cut_idx_R)
 
-Test_Wiggler.xy_point = (xoffset, yoffset)
-Test_Wiggler.select_xy()
-Bx00 = Test_Wiggler.raw_data["Bx"][slice]
-By00 = Test_Wiggler.raw_data["By"][slice]
-Bz00 = Test_Wiggler.raw_data["Bs"][slice]
+test_wiggler.xy_point = (xoffset, yoffset)
+test_wiggler.select_xy()
+Bx00 = test_wiggler.raw_data["Bx"][slice]
+By00 = test_wiggler.raw_data["By"][slice]
+Bz00 = test_wiggler.raw_data["Bs"][slice]
 
-Z  = Test_Wiggler.s_full[slice]
+Z  = test_wiggler.s_full[slice]
 
 fig1, (ax1, ax2, ax3) = plt.subplots(3, figsize=(10, 4), constrained_layout=True)
 ax1.plot(Z, Bx00, label=f"Bx Data  ({xoffset}, {yoffset})")
@@ -151,11 +153,11 @@ ax3.grid()
 xoffset = 1.0
 yoffset = 1.0
 
-Test_Wiggler.xy_point = (xoffset, yoffset)
-Test_Wiggler.select_xy()
-Bx10 = Test_Wiggler.raw_data["Bx"][slice]
-By10 = Test_Wiggler.raw_data["By"][slice]
-Bz10 = Test_Wiggler.raw_data["Bs"][slice]
+test_wiggler.xy_point = (xoffset, yoffset)
+test_wiggler.select_xy()
+Bx10 = test_wiggler.raw_data["Bx"][slice]
+By10 = test_wiggler.raw_data["By"][slice]
+Bz10 = test_wiggler.raw_data["Bs"][slice]
 
 
 ax1.plot(Z, Bx10, label=f"Bx Data  ({xoffset}, {yoffset})")
@@ -173,8 +175,8 @@ plt.show()
 print("Plotted the fields.\nNow making the Hamiltonian...")
 
 qp0 = [0,0,0,0,0,0]
-length = Test_Wiggler.s_full[-1] - Test_Wiggler.s_full[0]
-s_start = Test_Wiggler.s_full[0]
+length = test_wiggler.s_full[-1] - test_wiggler.s_full[0]
+s_start = test_wiggler.s_full[0]
 start_time = time.time()
 H_wiggler = bp.Hamiltonian(length, curv, wiggler, s_start=s_start)
 end_time = time.time()
