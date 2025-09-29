@@ -111,6 +111,9 @@ class Wiggler:
             # This is equivalent to a single function with a phase-offset, but more numerically stable.
             y += A1 * np.cos(k * x) + A2 * np.sin(k * x)
 
+        if (len(params) % 3) == 1:
+            y += params[-1]
+
         return y
 
 
@@ -181,9 +184,9 @@ class Wiggler:
             field_valleys = field_valleys[np.logical_and(field_valleys > w_left, field_valleys < w_right)]
             field_extrema = np.sort(np.concatenate((field_peaks, field_valleys)))
             if not self.der:
-                self.borders_idx[field] = [field_extrema[3], field_extrema[-4]]
+                self.borders_idx[field] = [field_extrema[4], field_extrema[-4]]
             else:
-                self.borders_idx[field] = [field_extrema[3], field_extrema[-4]]
+                self.borders_idx[field] = [field_extrema[4], field_extrema[-4]]
 
 
     # PRIVATE
@@ -272,10 +275,12 @@ class Wiggler:
 
             cos_amps, sin_amps, k_modes = self._find_modes(s_reg, field_reg, self.ds, n_modes)
 
-            p0 = np.zeros(n_modes*3)
+            # after:
+            p0 = np.zeros(n_modes * 3 + 1)
+            p0[-1] = float(np.mean(field_reg))  # DC guess
 
             for ii in range(n_modes):
-                p0[3 * ii] = cos_amps[ii]
+                p0[3 * ii + 0] = cos_amps[ii]
                 p0[3 * ii + 1] = sin_amps[ii]
                 p0[3 * ii + 2] = k_modes[ii]
 
@@ -299,29 +304,21 @@ class Wiggler:
     # dL, dR are the first derivatives at the left and right boundaries
     # ddL, ddR are the second derivatives at the left and right boundaries
     def _boundary_from_sine(self, field, s_mid):
-        """
-        Compute boundary conditions at the left/right ends of the CENTER sinusoid region
-        for the given field. Returns [fL, fR, dL, dR, ddL, ddR].
-        """
-        assert self.fit_pars[field]["sines"] is not None, \
-            f"No sine parameters stored for {field}. Did _fit_sinusoids run?"
-
-        params = self.fit_pars[field]["sines"]
-        xL = float(s_mid[0])
-        xR = float(s_mid[-1])
-
+        xL, xR = s_mid[0] - self.ds, s_mid[-1] + self.ds
         fL = fR = dL = dR = ddL = ddR = 0.0
-        for A_cos, A_sin, k in zip(params[0::3], params[1::3], params[2::3]):
-            # f
-            fL += A_cos * np.cos(k * xL) + A_sin * np.sin(k * xL)
-            fR += A_cos * np.cos(k * xR) + A_sin * np.sin(k * xR)
-            # f'
-            dL += -A_cos * k * np.sin(k * xL) + A_sin * k * np.cos(k * xL)
-            dR += -A_cos * k * np.sin(k * xR) + A_sin * k * np.cos(k * xR)
-            # f''
-            ddL += -(k ** 2) * (A_cos * np.cos(k * xL) + A_sin * np.sin(k * xL))
-            ddR += -(k ** 2) * (A_cos * np.cos(k * xR) + A_sin * np.sin(k * xR))
-
+        params = self.fit_pars[field]["sines"]  # however you access the fitted vector for the current field
+        for Ac, As, k in zip(params[::3], params[1::3], params[2::3]):
+            fL += Ac * np.cos(k * xL) + As * np.sin(k * xL)
+            fR += Ac * np.cos(k * xR) + As * np.sin(k * xR)
+            dL += k * (As * np.cos(k * xL) - Ac * np.sin(k * xL))
+            dR += k * (As * np.cos(k * xR) - Ac * np.sin(k * xR))
+            ddL += -(k * k) * (Ac * np.cos(k * xL) + As * np.sin(k * xL))
+            ddR += -(k * k) * (Ac * np.cos(k * xR) + As * np.sin(k * xR))
+        # DC only shifts values:
+        if (len(params) % 3) == 1:
+            c0 = params[-1]
+            fL += c0;
+            fR += c0
         return np.array([fL, fR, dL, dR, ddL, ddR], dtype=float)
 
     # PRIVATE
@@ -509,7 +506,7 @@ class Wiggler:
     def _num(self, x, p=12):
         return f"{float(x):.{p}g}"
 
-    def _poly_to_sympy(self, coeffs, var="s", p=12):
+    def _poly_to_sympy(self, coeffs, p=12):
         terms = []
         for n, c in enumerate(coeffs):
             if c == 0:
@@ -517,17 +514,17 @@ class Wiggler:
             if n == 0:
                 terms.append(self._num(c, p))
             elif n == 1:
-                terms.append(f"{self._num(c, p)}*{var}")
+                terms.append(f"{self._num(c, p)}*s")
             else:
-                terms.append(f"{self._num(c, p)}*{var}**{n}")
+                terms.append(f"{self._num(c, p)}*s**{n}")
         return " + ".join(terms) if terms else "0"
 
-    def _sines_to_sympy(self, params, var="s", p=12):
-        # params: [Acos1, Asin1, k1, Acos2, Asin2, k2, ...]
+    def _sines_to_sympy(self, params, p=12):
         parts = []
         for Ac, As, k in zip(params[0::3], params[1::3], params[2::3]):
-            parts.append(f"{self._num(Ac, p)}*cos({self._num(k, p)}*{var}) + "
-                         f"{self._num(As, p)}*sin({self._num(k, p)}*{var})")
+            parts.append(f"{Ac:.{p}g}*cos({k:.{p}g}*s) + {As:.{p}g}*sin({k:.{p}g}*s)")
+        if (len(params) % 3) == 1:
+            parts.append(f"{params[-1]:.{p}g}")
         return " + ".join(parts) if parts else "0"
 
     def export_piecewise_sympy(self, field="By", precision=12):
@@ -564,7 +561,7 @@ class Wiggler:
         prev = s_min
         for j, cf in enumerate(L_coeffs):
             end = bordersL[j]
-            expr = self._poly_to_sympy(cf, "s", precision)
+            expr = self._poly_to_sympy(cf, precision)
             cond = f"And({"s"} >= {self._num(prev, precision)}, {"s"} <= {self._num(end, precision)})"
             pieces.append(f"({expr}, {cond})")
             prev = end
@@ -573,7 +570,7 @@ class Wiggler:
         sine_params = self.fit_pars[field].get("sines", [])
         if i1 > i0 and len(sine_params):
             start_c = bordersL[-1] if bordersL else float(s[i0 - 1]) if i0 > 0 else s_min
-            expr_c = self._sines_to_sympy(sine_params, "s", precision)
+            expr_c = self._sines_to_sympy(sine_params, precision)
             cond_c = f"And({"s"} > {self._num(start_c, precision)}, {"s"} <= {self._num(center_right, precision)})"
             pieces.append(f"({expr_c}, {cond_c})")
 
@@ -581,15 +578,13 @@ class Wiggler:
         prev = center_right
         for j, cf in enumerate(R_coeffs):
             end = bordersR[j]
-            expr = self._poly_to_sympy(cf, "s", precision)
+            expr = self._poly_to_sympy(cf, precision)
             cond = f"And({"s"} > {self._num(prev, precision)}, {"s"} <= {self._num(end, precision)})"
             pieces.append(f"({expr}, {cond})")
             prev = end
 
         return "Piecewise(" + ", ".join(pieces) + ")"
 
-    def export_all_piecewise_sympy(self, precision=12):
-        return {fld: self.export_piecewise_sympy(fld, precision) for fld in ["Bx", "By", "Bs"]}
 
     ####################################################################################################################
     # PLOTTING

@@ -37,14 +37,15 @@ Test_Wiggler = Wiggler(file_path='example_data/knot_map_test.txt',
                        ds=dz,
                        peak_window=(99, 2100),
                        n_modes=[3, 3, 1],
-                       poly_deg=[[8, 5], [5, 5], [5, 5]],
+                       poly_deg=[[4, 4], [4, 4], [4, 4]],
+                       poly_pieces=[[29, 35], [28, 36], [8, 8]],
                        der=False
                        )
 
 Test_Wiggler.set()
 Test_Wiggler.plot_fields()
-#Test_Wiggler.plot_integrated_fields()
-prrrr
+Test_Wiggler.plot_integrated_fields()
+
 print("DERIVATIVES:")
 Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
                            xy_point=(0, 0),
@@ -52,7 +53,8 @@ Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
                            dy=dz,
                            ds=dz,
                            n_modes=[6, 4, 1],
-                           poly_deg=[[8, 5], [8, 10], [5, 5]],
+                           poly_deg=[[4, 4], [4, 4], [4, 4]],
+                           poly_pieces=[[15, 15], [15, 15], [15, 15]],
                            peak_window=(99, 2100),
                            der=True,
                            filter_params=(None, 2090, 7, 11, 3)
@@ -61,22 +63,19 @@ Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
 Test_Wiggler_Der.set()
 #Test_Wiggler_Der.plot_fields()
 
-Bx_string, separatex = Test_Wiggler.export_piecewise_string(component="Bx")
-Bx_der_string, separatex_der = Test_Wiggler_Der.export_piecewise_string(component="Bx")
-By_string, separatey = Test_Wiggler.export_piecewise_string(component="By")
-By_der_string, separatey_der = Test_Wiggler_Der.export_piecewise_string(component="By")
-Bs_string, separates = Test_Wiggler.export_piecewise_string(component="Bs")
+Bx_string = Test_Wiggler.export_piecewise_sympy(field="Bx")
+Bx_der_string = Test_Wiggler_Der.export_piecewise_sympy(field="Bx")
+By_string = Test_Wiggler.export_piecewise_sympy(field="By")
+By_der_string = Test_Wiggler_Der.export_piecewise_sympy(field="By")
+Bs_string = Test_Wiggler.export_piecewise_sympy(field="Bs")
 
-#print(Test_Wiggler.debug_piece_counts("Bs"))
-#print(Test_Wiggler_Der.debug_piece_counts("Bs"))
-#print(By_string)
 #print(Bs_string)
 #print(Bx_der_string)
 #print(By_der_string)
 
 a1 = Bx_string
 b1 = By_string
-bs = "0"#Bs_string
+bs = 0#Bs_string
 
 a2 = 0
 b2 = 0
