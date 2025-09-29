@@ -42,8 +42,8 @@ Test_Wiggler = Wiggler(file_path='example_data/knot_map_test.txt',
 )
 
 Test_Wiggler.set()
-Test_Wiggler.plot_fields()
-Test_Wiggler.plot_integrated_fields()
+#Test_Wiggler.plot_fields()
+#Test_Wiggler.plot_integrated_fields()
 
 print("DERIVATIVES:")
 Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
@@ -111,6 +111,8 @@ start_time = time.time()
 Bxfun, Byfun, Bsfun = wiggler.get_Bfield()
 end_time = time.time()
 print(f"Time to make the functions: {end_time - start_time} seconds")
+
+
 
 # Screw the Hamiltonian. Let's try some manual tracking.
 
@@ -196,8 +198,8 @@ gamma = E / (m * c**2)  # Lorentz factor
 x0 = 0.0  # Initial x position in meters
 y0 = 0.0    # Initial y position in meters
 z0 = Test_Wiggler.s_full[5]    # Initial z position in meters
-px0 = 0   # Initial x momentum in kg*m/s
-py0 = 0   # Initial y momentum in kg*m/s
+px0 = 0.000*E/c   # Initial x momentum in kg*m/s
+py0 = -0.0000*E/c   # Initial y momentum in kg*m/s
 pz0 = np.sqrt((E/c)**2 - px0**2 - py0**2)  # Initial z momentum in kg*m/s
 
 # Time parameters

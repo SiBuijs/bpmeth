@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import scipy as sc
 import sympy as sp
+from numpy.ma.core import zeros_like
 from scipy.signal import find_peaks
 from scipy.optimize import curve_fit
 from numpy.polynomial import Polynomial
@@ -329,6 +330,151 @@ class Wiggler:
                 self.der2_fit_pars[field]["sines"] = popt
                 self.fit_der2[field][slice] = self._sinusoid(s_reg, *popt)
 
+    ####################################################################################################################
+    # PIECEWISE POLYNOMIAL FITTING
+    ####################################################################################################################
+
+    """
+    def _boundary_from_sine(self, z_mid: np.ndarray, sine: SineModel) -> np.ndarray:
+        xL, xR = z_mid[0] - self.dz, z_mid[-1] + self.dz
+        fL = fR = dL = dR = ddL = ddR = 0.0
+        for A1, A2, k in zip(sine.Acos, sine.Asin, sine.k):
+            fL += A1*np.cos(k*xL) + A2*np.sin(k*xL)
+            fR += A1*np.cos(k*xR) + A2*np.sin(k*xR)
+            dL += k*(A2*np.cos(k*xL) - A1*np.sin(k*xL))
+            dR += k*(A2*np.cos(k*xR) - A1*np.sin(k*xR))
+            ddL += -k*k*(A1*np.cos(k*xL) + A2*np.sin(k*xL))
+            ddR += -k*k*(A1*np.cos(k*xR) + A2*np.sin(k*xR))
+        return np.array([fL, fR, dL, dR, ddL, ddR], dtype=float)
+
+    def _boundary_from_poly(self, z_prev: np.ndarray, poly: Polynomial) -> np.ndarray:
+        xL, xR = z_prev[0] - self.dz, z_prev[-1] + self.dz
+        dp, ddp = poly.deriv(), poly.deriv(2)
+        return np.array([poly(xL), poly(xR), dp(xL), dp(xR), ddp(xL), ddp(xR)], dtype=float)
+
+    @staticmethod
+    def _balanced_slices(n: int, num_regions: int) -> list[slice]:
+        base, rem = n // num_regions, n % num_regions
+        slices, start = [], 0
+        for i in range(num_regions):
+            end = start + base + (1 if i < rem else 0)
+            if end > start:
+                slices.append(slice(start, end))
+            start = end
+        return slices
+
+    def _fit_poly_side(self, z_region, b_region, z_sines, sine, num_slices, left_side):
+        deg = self.degree
+        slices = self._balanced_slices(len(z_region), num_slices)
+        if left_side:
+            slices = list(reversed(slices))
+        fit_reg = np.zeros_like(z_region, dtype=float)
+        pieces = []
+        prev_poly = None
+        prev_z = None
+        for ix, s in enumerate(slices):
+            z_this, b_this = z_region[s], b_region[s]
+            boundaries = self._boundary_from_sine(z_sines, sine) if ix == 0 else self._boundary_from_poly(prev_z, prev_poly)
+            if deg >= 5:
+                if left_side:
+                    dbL = (-3 * b_this[0] + 4 * b_this[1] - b_this[2]) / (2 * self.dz)
+                    d2L = (2 * b_this[0] - 5 * b_this[1] + 4 * b_this[2] - b_this[3]) / (self.dz ** 2)
+                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
+                                               x0=[z_this[0], z_this[-1]], y0=[b_this[0], boundaries[0]],
+                                               xp0=[z_this[0], z_this[-1]], yp0=[dbL, boundaries[2]],
+                                               xpp0=[z_this[0], z_this[-1]], ypp0=[d2L, boundaries[4]])
+                else:
+                    dbR = (3 * b_this[-1] - 4 * b_this[-2] + b_this[-3]) / (2 * self.dz)
+                    d2R = (2 * b_this[-1] - 5 * b_this[-2] + 4 * b_this[-3] - b_this[-4]) / (self.dz ** 2)
+                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
+                                               x0=[z_this[0], z_this[-1]], y0=[boundaries[1], b_this[-1]],
+                                               xp0=[z_this[0], z_this[-1]], yp0=[boundaries[3], dbR],
+                                               xpp0=[z_this[0], z_this[-1]], ypp0=[boundaries[5], d2R])
+            elif deg >= 3:
+                if left_side:
+                    dbL = (-3 * b_this[0] + 4 * b_this[1] - b_this[2]) / (2 * self.dz)
+                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
+                                               x0=[z_this[0], z_this[-1]], y0=[b_this[0], boundaries[0]],
+                                               xp0=[z_this[0], z_this[-1]], yp0=[dbL, boundaries[2]])
+                else:
+                    dbR = (3 * b_this[-1] - 4 * b_this[-2] + b_this[-3]) / (2 * self.dz)
+                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
+                                               x0=[z_this[0], z_this[-1]], y0=[boundaries[1], b_this[-1]],
+                                               xp0=[z_this[0], z_this[-1]], yp0=[boundaries[3], dbR])
+            else:
+                if left_side:
+                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
+                                               x0=[z_this[0], z_this[-1]], y0=[b_this[0], boundaries[0]])
+                else:
+                    coeffs = poly_fit.poly_fit(N=deg, xdata=z_this, ydata=b_this,
+                                               x0=[z_this[0], z_this[-1]], y0=[boundaries[1], b_this[-1]])
+            poly = Polynomial(coeffs)
+            fit_reg[s] = poly(z_this)
+            prev_poly, prev_z = poly, z_this
+            pieces.append((s.start, poly))
+        return fit_reg, pieces
+
+    def _fit_edges(self) -> None:
+        z = self.z_full
+        for c in self.COMPONENTS:
+            ch = self.fields[c]
+            i0, i1 = ch.borders_idx
+            z_left, b_left = z[:i0], ch.data[:i0]
+            z_right, b_right = z[i1:], ch.data[i1:]
+            z_mid = z[i0:i1]
+            ns_left, ns_right = self.slice_counts[c]["left"], self.slice_counts[c]["right"]
+            fitL, piecesL = self._fit_poly_side(z_left, b_left, z_mid, ch.sine, ns_left, True)
+            fitR, piecesR = self._fit_poly_side(z_right, b_right, z_mid, ch.sine, ns_right, False)
+            ch.left.set_pieces([p[0] for p in piecesL], [p[1] for p in piecesL])
+            ch.right.set_pieces([i1 + p[0] for p in piecesR], [p[1] for p in piecesR])
+            ch.fit = np.zeros_like(ch.data, dtype=float)
+            ch.fit[:i0] = fitL
+            ch.fit[i1:] = fitR
+    
+        def tune_slices_for_zero_integral(self, field="all", left_candidates=None, right_candidates=None, tradeoff_mse=0.0, verbose=None):
+        if verbose is None:
+            verbose = self.verbose
+        self._ensure("data", "borders", "sines")
+        def _score(y_fit, y_data, z):
+            I = sc.integrate.cumulative_trapezoid(y_fit, x=z, initial=0.0)
+            I_end = I[-1]
+            if tradeoff_mse:
+                mse = np.mean((y_fit - y_data) ** 2)
+                return abs(I_end) + tradeoff_mse * mse, I_end, mse
+            return abs(I_end), I_end, None
+        def _tune_one(name: str):
+            ch = self.fields[name]; z = self.z_full; i0, i1 = ch.borders_idx
+            z_left, b_left, z_right, b_right = z[:i0], ch.data[:i0], z[i1:], ch.data[i1:]
+            z_mid = z[i0:i1]
+            Ls = range(max(2, self.slice_counts[name]["left"] - 8), self.slice_counts[name]["left"] + 9) if left_candidates is None else list(left_candidates)
+            Rs = range(max(2, self.slice_counts[name]["right"] - 8), self.slice_counts[name]["right"] + 9) if right_candidates is None else list(right_candidates)
+            best = None
+            for L in Ls:
+                for R in Rs:
+                    fitL, piecesL = self._fit_poly_side(z_left, b_left, z_mid, ch.sine, L, True)
+                    fitR, piecesR = self._fit_poly_side(z_right, b_right, z_mid, ch.sine, R, False)
+                    y_fit = np.zeros_like(ch.data, dtype=float)
+                    y_fit[:i0] = fitL; y_fit[i1:] = fitR
+                    mid_mask = (z >= z[i0]) & (z <= z[i1 - 1])
+                    y_fit[mid_mask] = ch.sine.eval(z[mid_mask])
+                    score, I_end, mse = _score(y_fit, ch.data, z)
+                    if best is None or score < best["score"]:
+                        best = {"score": score, "I_end": I_end, "mse": mse, "L": L, "R": R,
+                                "fit": y_fit, "piecesL": piecesL, "piecesR": piecesR}
+            if verbose:
+                msg = f"[{name}] best slices: left={best['L']} right={best['R']} |I_end|={abs(best['I_end']):.3e}"
+                if tradeoff_mse and best["mse"] is not None:
+                    msg += f"  mse={best['mse']:.3e}"
+                print(msg)
+            ch.fit = best["fit"]
+            ch.left.set_pieces([p[0] for p in best["piecesL"]], [p[1] for p in best["piecesL"]])
+            ch.right.set_pieces([i1 + p[0] for p in best["piecesR"]], [p[1] for p in best["piecesR"]])
+            self.slice_counts[name]["left"], self.slice_counts[name]["right"] = best["L"], best["R"]
+        targets = [field] if field in self.COMPONENTS else (["Bx", "By"] if field == "both" else list(self.COMPONENTS))
+        for name in targets:
+            _tune_one(name)
+        self._merge_sections(); self._compute_primitives()
+    """
 
 
     ####################################################################################################################
@@ -674,7 +820,7 @@ class Wiggler:
 
     @staticmethod
     def _integrate(data, ds):
-        return np.cumsum(data) * ds
+        return sc.integrate.cumulative_trapezoid(data, initial=0) * ds
 
     def plot_integrated_fields(self):
         fig1, (ax1, ax2, ax3) = plt.subplots(3, figsize=(10, 4), constrained_layout=True)
