@@ -1,4 +1,4 @@
-from wiggler_class import Wiggler
+from wiggler_class import WigglerFieldFitter
 from scipy import signal
 import bpmeth as bp
 import matplotlib.pyplot as plt
@@ -30,35 +30,35 @@ dz = 0.001  # Step size in the z direction for numerical differentiation.
 # n_modes_x: Number of modes in the x direction for fitting the sinusoid.
 # n_modes_y: Number of modes in the y direction for fitting the sinusoid.
 print("FIELDS:")
-Test_Wiggler = Wiggler(file_path='example_data/knot_map_test.txt',
-                       xy_point=(0, 0),
-                       dx=dz,
-                       dy=dz,
-                       ds=dz,
-                       peak_window=(99, 2100),
-                       n_modes=[3, 3, 1],
-                       poly_deg=[[4, 4], [4, 4], [4, 4]],
-                       poly_pieces=[[29, 35], [28, 36], [8, 8]],
-                       der=False
-                       )
+Test_Wiggler = WigglerFieldFitter(file_path='example_data/knot_map_test.txt',
+                                  xy_point=(0, 0),
+                                  dx=dz,
+                                  dy=dz,
+                                  ds=dz,
+                                  peak_window=(99, 2100),
+                                  n_modes=[3, 3, 1],
+                                  poly_deg=[[4, 4], [4, 4], [4, 4]],
+                                  poly_pieces=[[29, 35], [28, 36], [8, 8]],
+                                  der=False
+                                  )
 
 Test_Wiggler.set()
 Test_Wiggler.plot_fields()
 Test_Wiggler.plot_integrated_fields()
 
 print("DERIVATIVES:")
-Test_Wiggler_Der = Wiggler(file_path='example_data/knot_map_test.txt',
-                           xy_point=(0, 0),
-                           dx=dz,
-                           dy=dz,
-                           ds=dz,
-                           n_modes=[6, 4, 1],
-                           poly_deg=[[4, 4], [4, 4], [4, 4]],
-                           poly_pieces=[[15, 15], [15, 15], [15, 15]],
-                           peak_window=(99, 2100),
-                           der=True,
-                           filter_params=(None, 2090, 7, 11, 3)
-                           )
+Test_Wiggler_Der = WigglerFieldFitter(file_path='example_data/knot_map_test.txt',
+                                      xy_point=(0, 0),
+                                      dx=dz,
+                                      dy=dz,
+                                      ds=dz,
+                                      n_modes=[6, 4, 1],
+                                      poly_deg=[[4, 4], [4, 4], [4, 4]],
+                                      poly_pieces=[[15, 15], [15, 15], [15, 15]],
+                                      peak_window=(99, 2100),
+                                      der=True,
+                                      filter_params=(None, 2090, 7, 11, 3)
+                                      )
 
 Test_Wiggler_Der.set()
 #Test_Wiggler_Der.plot_fields()

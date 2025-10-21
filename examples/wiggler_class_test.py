@@ -1,6 +1,7 @@
 from tests.test_black_absorber import test_with_generic_beam
 
-from wiggler_class import Wiggler
+from wiggler_class import WigglerFieldFitter
+from wiggler_class import WigglerFull
 import bpmeth as bp
 import matplotlib.pyplot as plt
 import numpy as np
@@ -30,39 +31,49 @@ dz = 0.001  # Step size in the z direction for numerical differentiation.
 # n_modes_x: Number of modes in the x direction for fitting the sinusoid.
 # n_modes_y: Number of modes in the y direction for fitting the sinusoid.
 print("FIELDS:")
-test_wiggler = Wiggler(file_path='example_data/knot_map_test.txt',
-                       xy_point=(0, 0),
-                       dx=dz,
-                       dy=dz,
-                       ds=dz,
-                       peak_window=(99, 2100),
-                       n_modes=[3, 3, 1],
-                       poly_deg=[[4, 4], [4, 4], [4, 4]],
-                       poly_pieces=[[19, 35], [19, 36], [8, 8]],
-                       der=False
-                       )
-
+test_wiggler = WigglerFieldFitter(file_path='example_data/knot_map_test.txt',
+                                  xy_point=(0, 0),
+                                  dx=dz,
+                                  dy=dz,
+                                  ds=dz,
+                                  peak_window=(99, 2100),
+                                  n_modes=[3, 3, 1],
+                                  poly_deg=[[4, 4], [4, 4], [4, 4]],
+                                  poly_pieces=[[19, 35], [19, 36], [8, 8]],
+                                  der=False
+                                  )
 test_wiggler.set()
-test_wiggler.plot_fields()
-#test_wiggler.plot_integrated_fields()
+"""
+test_wigglerfull = WigglerFull(test_wiggler, test_wiggler_der)
+test_wigglerfull.set()
+import time
+start_time = time.time()
+test_wigglerfull.get_ab_params()
+end_time = time.time()
+print(f"Time to make the segments: {end_time - start_time} seconds")
+print(len(test_wigglerfull.segments["Bx"]))
+print(len(test_wigglerfull.segments["Bx"]))
+print(len(test_wigglerfull.segments["Bs"]))
 
+prrrr
+"""
 print("DERIVATIVES:")
-test_wiggler_der = Wiggler(file_path='example_data/knot_map_test.txt',
-                           xy_point=(0, 0),
-                           dx=dz,
-                           dy=dz,
-                           ds=dz,
-                           n_modes=[6, 4, 1],
-                           poly_deg=[[4, 4], [4, 4], [4, 4]],
-                           poly_pieces=[[15, 15], [15, 15], [15, 15]],
-                           peak_window=(99, 2100),
-                           der=True,
-                           filter_params=(None, 2090, 7, 11, 3)
-                           )
+test_wiggler_der = WigglerFieldFitter(file_path='example_data/knot_map_test.txt',
+                                      xy_point=(0, 0),
+                                      dx=dz,
+                                      dy=dz,
+                                      ds=dz,
+                                      n_modes=[6, 4, 1],
+                                      poly_deg=[[4, 4], [4, 4], [4, 4]],
+                                      poly_pieces=[[15, 15], [15, 15], [15, 15]],
+                                      peak_window=(99, 2100),
+                                      der=2,
+                                      filter_params=(None, 2090, 7, 11, 3)
+                                      )
 
 test_wiggler_der.set()
-#test_wiggler_der.plot_fields()
-
+test_wiggler_der.plot_fields()
+prrr
 Bx_string = test_wiggler.export_piecewise_sympy(field="Bx")
 Bx_der_string = test_wiggler_der.export_piecewise_sympy(field="Bx")
 By_string = test_wiggler.export_piecewise_sympy(field="By")

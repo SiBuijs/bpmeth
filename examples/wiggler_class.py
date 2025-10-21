@@ -1,10 +1,13 @@
-# Compact, refactored Wiggler
-# - Less duplication via helpers and component loops
-# - Clear ensure() dependency gates
-# - Generic sine-fitting used for fields and curvature
-# - Small quality-of-life utilities (mid masks, magnitude, plotting core)
-#
-# Public API preserved (same method names), plus docstrings tightened.
+# TODO: Keep splines + Sinusoids
+#       Wiggler generates data about the splines and sinusoids
+# TODO: Add class "WigglerSlice" (based on Gianni's MyWiggler) that can contain a single bpmeth instance.
+#       Receives a1, a2, a3, b1, b2, b3, bs and so on to generate one instance of bpmeth
+#       Contains the starting position of the element, and x y offsets
+# TODO: The entire wiggler should be stored in another object which can combine the results into one object
+#       Receives the bpmeth instances and stores them in one object
+#       Needs to be able to return the magnetic field for any s
+#       Builds a line with the slices
+# TODO: If I'm done with this before Tuesday, I'd like to get rid of the sinusoids altogether, just splines.
 
 from __future__ import annotations
 
@@ -12,6 +15,7 @@ import numpy as np
 import pandas as pd
 import scipy as sc
 import sympy as sp
+import bpmeth as bp
 from bpmeth import poly_fit
 from scipy.signal import find_peaks
 from scipy.optimize import curve_fit
@@ -21,7 +25,7 @@ import matplotlib.pyplot as plt
 
 # ================================ Main class ================================
 
-class Wiggler:
+class WigglerFieldFitter:
 
     def __init__(
         self,
@@ -32,9 +36,9 @@ class Wiggler:
         ds=0.001,
         peak_window=(100, 2100),
         n_modes=[3, 3, 3],
-        poly_deg = [[15, 15], [15, 15], [15, 15]],
-        poly_pieces=[[3, 3], [3, 3], [3, 3]],
-        der=False,
+        poly_deg = [[3, 3], [3, 3], [3, 3]],
+        poly_pieces = [[15, 15], [15, 15], [15, 15]],
+        der=None,
         filter_params=None,
     ):
 
@@ -142,11 +146,11 @@ class Wiggler:
         # Store the raw data for each field.
 
         for field in ["Bx", "By", "Bs"]:
-            if self.der == False:
+            if self.der == None:
                 self.raw_data[field] = subset[field].to_numpy()
 
             else:
-                self._fit_transverse_parabolas()
+                self._fit_transverse_polynomials(degree=self.der)
 
             self.fit_data[field] = np.zeros_like(self.raw_data[field])
 
@@ -427,7 +431,7 @@ class Wiggler:
 
         Stores:
           - self.fit_data[fld] on the tails
-          - self.fit_pars[fld]["enge_L"] and ["enge_R"] as LISTS of coefficient arrays (ascending powers)
+          - self.fit_pars[fld]["edge_L"] and ["edge_R"] as LISTS of coefficient arrays (ascending powers)
         """
 
         for field in ["Bx", "By", "Bs"]:
@@ -461,11 +465,11 @@ class Wiggler:
             self.fit_data[field][i1:] = fitR
 
             # NEW: store coefficients (ascending-power) for exporter
-            self.fit_pars[field]["enge_L"] = [p[1].coef for p in piecesL]  # order: near-center -> far-left
-            self.fit_pars[field]["enge_R"] = [p[1].coef for p in piecesR]  # order: near-center -> far-right
+            self.fit_pars[field]["edge_L"] = [p[1].coef for p in piecesL]  # order: near-center -> far-left
+            self.fit_pars[field]["edge_R"] = [p[1].coef for p in piecesR]  # order: near-center -> far-right
 
             # existing border assembly (kept)
-            self.poly_borders[field] = bordersL + [float(self.s_full[i0]), float(self.s_full[i1])] + bordersR[1:]
+            self.poly_borders[field] = bordersL[:-1] + [float(self.s_full[i0]), float(self.s_full[i1])] + bordersR[1:]
 
     ####################################################################################################################
     # TRANSVERSE GRADIENTS
@@ -475,29 +479,48 @@ class Wiggler:
     # This method extracts the data at (x,y) = (-1,0), (0,0), (1,0) and fits parabolas to these points.
     # This is done because bpmeth needs the derivatives w.r.t. x at each point.
     # The first derivatives are zero, but can be extracted nevertheless.
-    def _fit_transverse_parabolas(self):
-        subsetm10 = self.df.xs((-1, 0), level=["X", "Y"]).sort_index()
-        subset00  = self.df.xs(( 0, 0), level=["X", "Y"]).sort_index()
-        subsetp10 = self.df.xs(( 1, 0), level=["X", "Y"]).sort_index()
+    import numpy as np
 
-        parabolas = {"Bx": None, "By": None, "Bs": None}
+    import numpy as np
+
+    def _fit_transverse_polynomials(self, points=[-1, 0, 1], degree=2):
+        """
+        Fits transverse polynomials of arbitrary degree through specified points.
+
+        Parameters
+        ----------
+        points : list of int or float
+            The transverse x positions (in multiples of dx) to use for fitting.
+            Must have at least (degree + 1) entries.
+        degree : int
+            Degree of the polynomial to fit.
+        """
+        if len(points) < degree + 1:
+            raise ValueError("Need at least degree + 1 points for polynomial fitting.")
+
+        # Extract data subsets for all X,Y pairs given in points
+        subsets = {px: self.df.xs((px, 0), level=["X", "Y"]).sort_index() for px in points}
+
+        polys = {"Bx": None, "By": None, "Bs": None}
 
         for field in ["Bx", "By", "Bs"]:
-            x = [-self.dx, 0, self.dx]
+            x = [p * self.dx for p in points]
+            n = len(subsets[points[0]][field])
+            polys[field] = np.zeros((n, degree + 1))
 
-            fieldm10 = subsetm10[field].to_numpy()
-            field00  = subset00[field].to_numpy()
-            fieldp10 = subsetp10[field].to_numpy()
+            for i in range(n):
+                y = [subsets[px][field].to_numpy()[i] for px in points]
+                coeffs = np.polyfit(x, y, degree)
+                polys[field][i, :] = coeffs
 
-            for ii in range(len(field00)):
-                if parabolas[field] is None:
-                    parabolas[field] = np.zeros((len(field00), 3))
-                y = [fieldm10[ii], field00[ii], fieldp10[ii]]
-                p = np.polyfit(x, y, 2)
-                parabolas[field][ii, :] = p
+            # Compute second derivative at x = 0 (generalized form)
+            if degree >= 2:
+                # coeffs are [a_n, a_{n-1}, ..., a_0]
+                self.raw_data[field] = 2 * polys[field][:, -(2 + 1)]
+            else:
+                self.raw_data[field] = polys[field][:, -1]
 
-            self.raw_data[field] = 2 * parabolas[field][:, 0]
-
+        self._fitted_polynomials = polys
 
     ####################################################################################################################
     # STRINGS FOR BPMETH
@@ -535,8 +558,8 @@ class Wiggler:
         center_right = float(s[i1 - 1]) if i1 > i0 else float(s[i0])
 
         # polynomials (ascending-power coeffs), order them from left->center and center->right
-        L_coeffs = list(self.fit_pars[field]["enge_L"]) if "enge_L" in self.fit_pars[field] else []
-        R_coeffs = list(self.fit_pars[field]["enge_R"]) if "enge_R" in self.fit_pars[field] else []
+        L_coeffs = list(self.fit_pars[field]["edge_L"]) if "edge_L" in self.fit_pars[field] else []
+        R_coeffs = list(self.fit_pars[field]["edge_R"]) if "edge_R" in self.fit_pars[field] else []
         # left list was fitted starting near center; reverse so it's leftmost..center
         L_coeffs = list(reversed(L_coeffs))
 
@@ -678,3 +701,65 @@ class Wiggler:
         ax3.grid()
 
         plt.show()
+
+
+# This class takes the a_n, b_n and b_s coefficients from the WigglerFieldFitter
+# It generates the magnetic field functions using bpmeth's GeneralVectorPotential, which it stores as attributes
+# It is meant to only store one single segment
+class WigglerSegment:
+    def __init__(self, a_list, b_list, bs, s0=0, length=0, x0=0, y0=0, curv=0):
+        self.bs = f"{bs}"
+        self.a = ()
+        self.b = ()
+        for ii in range(len(a_list)):
+            self.a += (f"{a_list[ii]}",)
+            self.b += (f"{b_list[ii]}",)
+
+        self.wiggler_map = bp.GeneralVectorPotential(hs=f"{curv}", a=self.a, b=self.b, bs=self.bs)
+        self.Bxfun, self.Byfun, self.Bsfun = self.wiggler_map.get_Bfield()
+
+        self.s0 = s0
+        self.length = length
+        self.x0 = x0
+        self.y0 = y0
+        self.scale = 1.
+
+    def get_field(self, x, y, s):
+        Bx = self.scale * self.Bx_fun(x - self.x0, y - self.y0, s + self.s0)
+        By = self.scale * self.By_fun(x - self.x0, y - self.y0, s + self.s0)
+        Bs = self.scale * self.Bs_fun(x - self.x0, y - self.y0, s + self.s0)
+        return Bx, By, Bs
+
+class WigglerFull:
+    def __init__(self, WigglerFieldFitter, WigglerFieldFitter_Der):
+        self.WigglerFieldFitter = WigglerFieldFitter
+        self.s0_dict = {}
+        self.borders_dict = {}
+        self.segments = {}
+
+    def set(self):
+        self.set_dicts()
+
+    def set_dicts(self):
+        s0_dict = {"Bx": [], "By": [], "Bs": []}
+        borders_dict = {"Bx": [], "By": [], "Bs": []}
+        # Collect all unique polynomial segment starts from all fields, left to right
+        for field in ["Bx", "By", "Bs"]:
+            borders = self.WigglerFieldFitter.poly_borders[field]
+            for s in borders:
+                if s not in s0_dict[field]:
+                    s0_dict[field].append(s)
+            s0_dict[field] = sorted(s0_dict[field])
+            # Save the indices of the borders in the s_full array
+            borders_dict[field] = [int(np.searchsorted(self.WigglerFieldFitter.s_full, val)) for val in s0_dict[field]]
+        # Add the start of the sinusoidal segment for each field if not already present
+        for field in ["Bx", "By", "Bs"]:
+            i0 = self.WigglerFieldFitter.borders_idx[field][0]
+            s_center_start = float(self.WigglerFieldFitter.s_full[i0])
+            if s_center_start not in s0_dict[field]:
+                s0_dict[field].append(s_center_start)
+            s0_dict[field] = sorted(s0_dict[field])
+            # Update borders_dict as well
+            borders_dict[field] = [int(np.searchsorted(self.WigglerFieldFitter.s_full, val)) for val in s0_dict[field]]
+        self.borders = borders_dict
+        self.s0_dict = s0_dict
