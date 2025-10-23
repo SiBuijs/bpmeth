@@ -58,6 +58,15 @@ test_wiggler.set()
 #print(segments[0][1])
 #print(segments[0][2])
 
+# Segments
+#Type of a: <class 'str'>
+#WigglerSegment: Created GeneralVectorPotential in 0.001759 seconds
+#WigglerSegment: Generated GeneralVectorPotential in 0.140589 seconds
+
+# Piecewise String
+#Type of a1: <class 'str'>
+#Time to make Vector Potential: 0.026366 seconds
+#Time to create Functions: 0.450982 seconds
 
 test_wigglerfull = WigglerFull(test_wiggler)
 import time

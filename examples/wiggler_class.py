@@ -549,53 +549,63 @@ class WigglerFieldFitter:
             parts.append(f"{params[-1]:.{p}g}")
         return " + ".join(parts) if parts else "0"
 
-    def export_piecewise_segments(self, field="By", precision=12):
+    def export_piecewise_sympy(self, field="By", precision=12):
         i0, i1 = self.borders_idx[field]
         s = self.s_full
         sL, sR = s[:i0], s[i1:]
         s_min, s_max = float(s[0]), float(s[-1])
         center_right = float(s[i1 - 1]) if i1 > i0 else float(s[i0])
 
-        L_coeffs = list(self.fit_pars[field].get("edge_L", []))
-        R_coeffs = list(self.fit_pars[field].get("edge_R", []))
+        # polynomials (ascending-power coeffs), order them from left->center and center->right
+        L_coeffs = list(self.fit_pars[field]["enge_L"]) if "enge_L" in self.fit_pars[field] else []
+        R_coeffs = list(self.fit_pars[field]["enge_R"]) if "enge_R" in self.fit_pars[field] else []
+        # left list was fitted starting near center; reverse so it's leftmost..center
         L_coeffs = list(reversed(L_coeffs))
 
-        nL, nR = len(L_coeffs), len(R_coeffs)
-        bordersL, bordersR = [], []
+        # boundaries from the same slicing logic used in fitting
+        nL = len(L_coeffs)
+        nR = len(R_coeffs)
 
+        bordersL = []
         if nL > 0 and len(sL) > 0:
             slL = self._balanced_slices(len(sL), nL)
-            bordersL = [float(sL[sl.stop - 1]) for sl in slL]
+            bordersL = [float(sL[sl.stop - 1]) for sl in slL]  # increasing, last ~ s[i0-1]
+
+        bordersR = []
         if nR > 0 and len(sR) > 0:
             slR = self._balanced_slices(len(sR), nR)
-            bordersR = [float(sR[sl.stop - 1]) for sl in slR]
+            bordersR = [float(sR[sl.stop - 1]) for sl in slR]  # increasing, last == s[-1]
 
-        segments = []  # each entry will be (start, end, expr_str)
+        # build piecewise tuples: (expr, cond)
+        pieces = []
 
         # left pieces
         prev = s_min
         for j, cf in enumerate(L_coeffs):
             end = bordersL[j]
             expr = self._poly_to_sympy(cf, precision)
-            segments.append((prev, end, expr))
+            cond = f"And({"s"} >= {self._num(prev, precision)}, {"s"} <= {self._num(end, precision)})"
+            pieces.append(f"({expr}, {cond})")
             prev = end
 
-        # center sine
+        # center sinusoid
         sine_params = self.fit_pars[field].get("sines", [])
         if i1 > i0 and len(sine_params):
             start_c = bordersL[-1] if bordersL else float(s[i0 - 1]) if i0 > 0 else s_min
             expr_c = self._sines_to_sympy(sine_params, precision)
-            segments.append((start_c, center_right, expr_c))
+            cond_c = f"And({"s"} > {self._num(start_c, precision)}, {"s"} <= {self._num(center_right, precision)})"
+            pieces.append(f"({expr_c}, {cond_c})")
 
         # right pieces
         prev = center_right
         for j, cf in enumerate(R_coeffs):
             end = bordersR[j]
             expr = self._poly_to_sympy(cf, precision)
-            segments.append((prev, end, expr))
+            cond = f"And({"s"} > {self._num(prev, precision)}, {"s"} <= {self._num(end, precision)})"
+            pieces.append(f"({expr}, {cond})")
             prev = end
 
-        return segments
+        return "Piecewise(" + ", ".join(pieces) + ")"
 
     ####################################################################################################################
     # PLOTTING

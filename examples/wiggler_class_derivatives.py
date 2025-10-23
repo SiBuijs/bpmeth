@@ -14,7 +14,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import scipy as sc
+import sympy as sp
+from sympy import simplify
+
 import bpmeth as bp
+import time
 from bpmeth import poly_fit
 from scipy.signal import find_peaks
 from scipy.optimize import curve_fit
@@ -534,7 +538,7 @@ class WigglerFieldFitter:
             if c == 0:
                 continue
             expr += sp.N(c, p) * s**n
-        return sp.simplify(expr)
+        return sp.sympify(expr)
 
     def _sines_to_sympy(self, params, p=12):
         import sympy as sp
@@ -546,7 +550,7 @@ class WigglerFieldFitter:
             expr += sp.N(Ac, p) * sp.cos(sp.N(k, p) * s) + sp.N(As, p) * sp.sin(sp.N(k, p) * s)
         if (len(params) % 3) == 1:
             expr += sp.N(params[-1], p)
-        return sp.simplify(expr)
+        return sp.sympify(expr)
 
     def export_piecewise_segments(self, field="By", precision=12, der=0):
         i0, i1 = self.borders_idx[field]
@@ -701,15 +705,20 @@ class WigglerFieldFitter:
 # It is meant to only store one single segment
 class WigglerSegment:
     def __init__(self, a_list, b_list, bs, s0=0, length=0, x0=0, y0=0, curv=0):
-        self.bs = f"{bs}"
+        self.bs = bs
         self.a = ()
         self.b = ()
         for ii in range(len(a_list)):
-            self.a += (f"{a_list[ii]}",)
-            self.b += (f"{b_list[ii]}",)
-
+            self.a += (a_list[ii],)
+            self.b += (b_list[ii],)
+        start = time.time()
         self.wiggler_map = bp.GeneralVectorPotential(hs=f"{curv}", a=self.a, b=self.b, bs=self.bs)
+        end = time.time()
+        print(f"WigglerSegment: Created GeneralVectorPotential in {end - start:.6f} seconds")
+        start = time.time()
         self.Bxfun, self.Byfun, self.Bsfun = self.wiggler_map.get_Bfield()
+        end = time.time()
+        print(f"WigglerSegment: Generated functions in {end - start:.6f} seconds")
 
         self.s0 = s0
         self.length = length

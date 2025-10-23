@@ -83,13 +83,13 @@ class FieldExpansion:
         bs = self.bsfun
         hs = self.hs
         nphi = self.nphi
-        
+
         phi0 = sum((an * x ** (n + 1) / sp.factorial(n + 1) for n, an in enumerate(a))) + sp.integrate(bs, s)
-        phi1 = sum((bn * x**n / sp.factorial(n) for n, bn in enumerate(b)))        
+        phi1 = sum((bn * x**n / sp.factorial(n) for n, bn in enumerate(b)))
         phiv = [phi0, phi1]
         for i in range(nphi-2):
-            phiv.append(phinplus2(phiv[i], x, s, hs).simplify())
-        phi = sum(pp * y**i / sp.factorial(i) for i, pp in enumerate(phiv)).simplify()
+            phiv.append(phinplus2(phiv[i], x, s, hs))  # no simplify
+        phi = sp.expand(sum(pp * y ** i / sp.factorial(i) for i, pp in enumerate(phiv)))
 
         if subs:
             """
@@ -97,7 +97,7 @@ class FieldExpansion:
             deviation is not too large by checking if the laplacian of the potential remains 
             within the allowed tolerances.
             """
-            
+
             phi =  self.subs(phi)
 
             lapl = (
