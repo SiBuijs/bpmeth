@@ -60,11 +60,11 @@ test_wiggler_der = WigglerFieldFitter(file_path='example_data/knot_map_test.txt'
 
 test_wiggler_der.set()
 
-Bx_string = test_wiggler.export_piecewise_sympy(field="Bx")
-Bx_der_string = test_wiggler_der.export_piecewise_sympy(field="Bx")
-By_string = test_wiggler.export_piecewise_sympy(field="By")
-By_der_string = test_wiggler_der.export_piecewise_sympy(field="By")
-Bs_string = test_wiggler.export_piecewise_sympy(field="Bs")
+Bx_string = test_wiggler.export_piecewise_segments(field="Bx")
+Bx_der_string = test_wiggler_der.export_piecewise_segments(field="Bx")
+By_string = test_wiggler.export_piecewise_segments(field="By")
+By_der_string = test_wiggler_der.export_piecewise_segments(field="By")
+Bs_string = test_wiggler.export_piecewise_segments(field="Bs")
 
 a1 = Bx_string
 b1 = By_string
@@ -77,7 +77,11 @@ a3 = Bx_der_string
 b3 = By_der_string
 
 curv=0
+import time
+start_time = time.time()
 wiggler_map = bp.GeneralVectorPotential(hs=f"{curv}",a=(f"{a1}", f"{a2}", f"{a3}"),b=(f"{b1}", f"{b2}", f"{b3}"), bs=f"{bs}")
+end_time = time.time()
+print(f"Time to create wiggler map: {end_time - start_time} seconds")
 Bxfun, Byfun, Bsfun = wiggler_map.get_Bfield()
 
 class MyWiggler:

@@ -63,11 +63,11 @@ Test_Wiggler_Der = WigglerFieldFitter(file_path='example_data/knot_map_test.txt'
 Test_Wiggler_Der.set()
 #Test_Wiggler_Der.plot_fields()
 
-Bx_string = Test_Wiggler.export_piecewise_sympy(field="Bx")
-Bx_der_string = Test_Wiggler_Der.export_piecewise_sympy(field="Bx")
-By_string = Test_Wiggler.export_piecewise_sympy(field="By")
-By_der_string = Test_Wiggler_Der.export_piecewise_sympy(field="By")
-Bs_string = Test_Wiggler.export_piecewise_sympy(field="Bs")
+Bx_string = Test_Wiggler.export_piecewise_segments(field="Bx")
+Bx_der_string = Test_Wiggler_Der.export_piecewise_segments(field="Bx")
+By_string = Test_Wiggler.export_piecewise_segments(field="By")
+By_der_string = Test_Wiggler_Der.export_piecewise_segments(field="By")
+Bs_string = Test_Wiggler.export_piecewise_segments(field="Bs")
 
 #print(Bs_string)
 #print(Bx_der_string)

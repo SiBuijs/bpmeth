@@ -1,7 +1,7 @@
-from tests.test_black_absorber import test_with_generic_beam
-
-from wiggler_class import WigglerFieldFitter
-from wiggler_class import WigglerFull
+from wiggler_class_derivatives import WigglerFieldFitter
+from wiggler_class_derivatives import WigglerSegment
+from wiggler_class_derivatives import WigglerFull
+#from wiggler_class import WigglerFull
 import bpmeth as bp
 import matplotlib.pyplot as plt
 import numpy as np
@@ -37,190 +37,67 @@ test_wiggler = WigglerFieldFitter(file_path='example_data/knot_map_test.txt',
                                   dy=dz,
                                   ds=dz,
                                   peak_window=(99, 2100),
-                                  n_modes=[3, 3, 1],
+                                  n_modes=[6, 6, 3],
                                   poly_deg=[[4, 4], [4, 4], [4, 4]],
-                                  poly_pieces=[[19, 35], [19, 36], [8, 8]],
-                                  der=False
+                                  poly_pieces=[[25, 25], [25, 25], [25, 25]],
+                                  deg=2
                                   )
 test_wiggler.set()
-"""
-test_wigglerfull = WigglerFull(test_wiggler, test_wiggler_der)
-test_wigglerfull.set()
+#test_wiggler.plot_fields(der=0)
+#test_wiggler.plot_fields(der=1)
+#test_wiggler.plot_fields(der=2)
+#segments = test_wiggler.export_piecewise_segments("Bx")
+# segments is a list of tuples (start, end, coefficients)
+# Taking segment[n] gives the n+1th tuple
+# Taking segment[n][0] gives the start of the n+1th segment
+# Taking segment[n][1] gives the end of the n+1th segment
+# Taking segment[n][2] gives the sympy expression of the n+1th segment
+#print(segments)
+#print(segments[0])
+#print(segments[0][0])
+#print(segments[0][1])
+#print(segments[0][2])
+
+
+test_wigglerfull = WigglerFull(test_wiggler)
 import time
 start_time = time.time()
-test_wigglerfull.get_ab_params()
+test_wigglerfull.set_segments()
 end_time = time.time()
 print(f"Time to make the segments: {end_time - start_time} seconds")
-print(len(test_wigglerfull.segments["Bx"]))
-print(len(test_wigglerfull.segments["Bx"]))
-print(len(test_wigglerfull.segments["Bs"]))
 
-prrrr
+test_wigglerfull.plot_fields(x=0.001, y=0.001)
+
+# Code below prints all the segments.
+# There are 123 segments in total, not sure how that arises, should be around 51.
+# Also, it plots the field in segment 67 (sinusoidal) to compare with the original fit.
+# It seems to work well.
 """
-print("DERIVATIVES:")
-test_wiggler_der = WigglerFieldFitter(file_path='example_data/knot_map_test.txt',
-                                      xy_point=(0, 0),
-                                      dx=dz,
-                                      dy=dz,
-                                      ds=dz,
-                                      n_modes=[6, 4, 1],
-                                      poly_deg=[[4, 4], [4, 4], [4, 4]],
-                                      poly_pieces=[[15, 15], [15, 15], [15, 15]],
-                                      peak_window=(99, 2100),
-                                      der=2,
-                                      filter_params=(None, 2090, 7, 11, 3)
-                                      )
+for i, segment in enumerate(test_wigglerfull.segments):
+    print(f"Segment {i}: s0 = {segment.s0}, length = {segment.length}")
 
-test_wiggler_der.set()
-test_wiggler_der.plot_fields()
-prrr
-Bx_string = test_wiggler.export_piecewise_sympy(field="Bx")
-Bx_der_string = test_wiggler_der.export_piecewise_sympy(field="Bx")
-By_string = test_wiggler.export_piecewise_sympy(field="By")
-By_der_string = test_wiggler_der.export_piecewise_sympy(field="By")
-Bs_string = test_wiggler.export_piecewise_sympy(field="Bs")
+segment = test_wigglerfull.segments[67]
+s0 = segment.s0
+length = segment.length
+s1 = s0 + length
+s_array = np.linspace(s0, s1, 1000)
+Bx, By, Bs = segment.get_field(0.001, 0.001, s_array)
 
-print(Bx_string)
-print(By_string)
-print(Bs_string)
-print(Bx_der_string)
-print(By_der_string)
-
-a1 = Bx_string
-b1 = By_string
-bs = 0#Bs_string
-
-a2 = 0
-b2 = 0
-
-a3 = Bx_der_string
-b3 = By_der_string
-
-#print(f"Bx string: {a1}")
-#print(f"By string: {b1}")
-#print(f"Bs string: {bs}")
-#print(f"Bx der string: {a3}")
-#print(f"By der string: {b3}")
-
-# NOTE:
-# a1 = "0" gives cut between first/last extremum in By and first/last extremum in Bx
-# b1 = "0" gives cut between first extremum in By and second extremum in Bx
-# b1 = "0" gives cut between second last and last extremum in Bx
-# Both a1 and b1 = "0" gives cut between first extremum in By and first extremum in Bx
-#   Hard to explain gaps on the right
-
-
-
-curv=0
-
-wiggler = bp.GeneralVectorPotential(hs=f"{curv}",a=(f"{a1}", f"{a2}", f"{a3}"),b=(f"{b1}", f"{b2}", f"{b3}"), bs=f"{bs}")
-
-print("Made the Vector Potential.\nNow making the functions...")
-
-import time
-start_time = time.time()
-# NOTE: Investigate how bpmeth makes these functions, there might be something that causes discrepancies.
-Bxfun, Byfun, Bsfun = wiggler.get_Bfield()
-end_time = time.time()
-print(f"Time to make the functions: {end_time - start_time} seconds")
-
-print("Made the functions.\nNow plotting...")
-
-
-# ----------------------------------------------------------------------------------------------------------------------
-# Show a comparison of the fitted field and the original field at (0, 0).
-xoffset = 0.0
-yoffset = 0.0
-cut_idx_L = 4
-cut_idx_R = -5
-slice = slice(cut_idx_L, cut_idx_R)
-
-test_wiggler.xy_point = (xoffset, yoffset)
+test_wiggler.xy_point = (1, 1)
 test_wiggler.select_xy()
-Bx00 = test_wiggler.raw_data["Bx"][slice]
-By00 = test_wiggler.raw_data["By"][slice]
-Bz00 = test_wiggler.raw_data["Bs"][slice]
 
-Z  = test_wiggler.s_full[slice]
-
-fig1, (ax1, ax2, ax3) = plt.subplots(3, figsize=(10, 4), constrained_layout=True)
-ax1.plot(Z, Bx00, label=f"Bx Data  ({xoffset}, {yoffset})")
-ax1.plot(Z, Bxfun(dz*xoffset, dz*yoffset, Z), label=f"Bx bpmeth  ({xoffset}, {yoffset})", linestyle='dashed')
-ax2.plot(Z, By00, label=f"Bx Data  ({xoffset}, {yoffset})")
-ax2.plot(Z, Byfun(dz*xoffset, dz*yoffset, Z), label=f"Bx bpmeth  ({xoffset}, {yoffset})", linestyle='dashed')
-ax3.plot(Z, Bz00, label=f"Bz Data  ({xoffset}, {yoffset})")
-ax3.plot(Z, Bsfun(dz*xoffset, dz*yoffset, Z), label=f"Bx bpmeth  ({xoffset}, {yoffset})", linestyle='dashed')
-ax1.set_title(f'Field Comparison at {xoffset, yoffset}')
-ax1.set_ylabel('Bx [T]')
-ax2.set_ylabel('By [T]')
-ax3.set_ylabel('Bz [T]')
-ax3.set_xlabel('Z [m]')
-ax1.grid()
-ax2.grid()
-ax3.grid()
-
-# ----------------------------------------------------------------------------------------------------------------------
-# Show a comparison of the fitted field and the original field at (1, 0).
-xoffset = 1.0
-yoffset = 1.0
-
-test_wiggler.xy_point = (xoffset, yoffset)
-test_wiggler.select_xy()
-Bx10 = test_wiggler.raw_data["Bx"][slice]
-By10 = test_wiggler.raw_data["By"][slice]
-Bz10 = test_wiggler.raw_data["Bs"][slice]
-
-
-ax1.plot(Z, Bx10, label=f"Bx Data  ({xoffset}, {yoffset})")
-ax1.plot(Z, Bxfun(dz*xoffset, dz*yoffset, Z), label=f"Bx bpmeth  ({xoffset}, {yoffset})", linestyle='dashed')
-ax2.plot(Z, By10, label=f"By Data  ({xoffset}, {yoffset})")
-ax2.plot(Z, Byfun(dz*xoffset, dz*yoffset, Z), label=f"Bx bpmeth  ({xoffset}, {yoffset})", linestyle='dashed')
-ax3.plot(Z, Bz10, label=f"Bz Data  ({xoffset}, {yoffset})")
-ax3.plot(Z, Bsfun(dz*xoffset, dz*yoffset, Z), label=f"Bx bpmeth  ({xoffset}, {yoffset})", linestyle='dashed')
-ax1.legend()
-ax2.legend()
-ax3.legend()
-
-plt.show()
-
-print("Plotted the fields.\nNow making the Hamiltonian...")
-
-qp0 = [0,0,0,0,0,0]
-length = test_wiggler.s_full[-1] - test_wiggler.s_full[0]
-s_start = test_wiggler.s_full[0]
-start_time = time.time()
-H_wiggler = bp.Hamiltonian(length, curv, wiggler, s_start=s_start)
-end_time = time.time()
-print(f"Time to make the Hamiltonian: {end_time - start_time} seconds")
-
-"""
-print("Made the Hamiltonian.\nNow solving the equations of motion...")
-
-start_time = time.time()
-ivp_opt={"rtol":1e-4, "atol":1e-7}
-sol_wiggler = H_wiggler.solve(qp0, ivp_opt=ivp_opt)
-end_time = time.time()
-print(f"Time to solve the equations of motion: {end_time - start_time} seconds")
-
-H_wiggler.plotsol(qp0, ivp_opt=ivp_opt)
+plt.figure(figsize=(10, 4))
+plt.plot(s_array, Bx, label='Bx')
+plt.plot(test_wiggler.s_full, test_wiggler.raw_data[0]['Bx'])
+plt.plot(s_array, By, label='By')
+plt.plot(test_wiggler.s_full, test_wiggler.raw_data[0]['By'])
+plt.plot(s_array, Bs, label='Bs')
+plt.plot(test_wiggler.s_full, test_wiggler.raw_data[0]['Bs'])
+plt.title(f'Fields in Segment starting at s0={s0:.3f} m')
+plt.xlabel('s [m]')
+plt.ylabel('Field [T]')
+plt.legend()
+plt.grid()
 plt.show()
 """
 
-print("Finished first track")
-
-import xtrack as xt
-
-start_time = time.time()
-p = xt.Particles(x = np.linspace(-1e-3, 1e-3, 1), energy0=10e9, mass0=xt.ELECTRON_MASS_EV)
-sol = H_wiggler.track(p, return_sol=True)
-end_time = time.time()
-print(f"Time to track with xtrack: {end_time - start_time} seconds")
-
-print(sol[0].keys())
-t = sol[0]['t']
-y = sol[0]['y'][0]
-
-plt.plot(t,y)
-plt.show()
-
-print("Finished second track")
