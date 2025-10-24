@@ -1,5 +1,6 @@
 from wiggler_class_derivatives import WigglerFieldFitter
 from wiggler_class_derivatives import WigglerFull
+import bpmeth
 import time
 
 ########################################################################################################################
@@ -8,7 +9,6 @@ import time
 
 dz = 0.001  # Step size in the z direction for numerical differentiation.
 
-print("FIELDS:")
 test_wiggler = WigglerFieldFitter(file_path='example_data/knot_map_test.txt',
                                   xy_point=(0, 0),
                                   dx=dz,
@@ -28,4 +28,8 @@ test_wigglerfull.set_segments()
 end_time = time.time()
 print(f"Time to make the segments: {end_time - start_time} seconds")
 
-test_wigglerfull.plot_fields(x=0.001, y=0.001)
+#test_wigglerfull.plot_fields()
+
+test_wigglerfull.plot_vector_potential(x=0.001, y=0.001)
+
+

@@ -705,32 +705,42 @@ class WigglerFieldFitter:
 # It is meant to only store one single segment
 class WigglerSegment:
     def __init__(self, a_list, b_list, bs, s0=0, length=0, x0=0, y0=0, curv=0):
-        self.bs = bs
-        self.a = ()
-        self.b = ()
-        for ii in range(len(a_list)):
-            self.a += (a_list[ii],)
-            self.b += (b_list[ii],)
-        start = time.time()
-        self.wiggler_map = bp.GeneralVectorPotential(hs=f"{curv}", a=self.a, b=self.b, bs=self.bs)
-        end = time.time()
-        print(f"WigglerSegment: Created GeneralVectorPotential in {end - start:.6f} seconds")
-        start = time.time()
-        self.Bxfun, self.Byfun, self.Bsfun = self.wiggler_map.get_Bfield()
-        end = time.time()
-        print(f"WigglerSegment: Generated functions in {end - start:.6f} seconds")
-
         self.s0 = s0
         self.length = length
         self.x0 = x0
         self.y0 = y0
         self.scale = 1.
 
+        self.bs = bs
+        self.a = ()
+        self.b = ()
+
+        for ii in range(len(a_list)):
+            self.a += (a_list[ii],)
+            self.b += (b_list[ii],)
+
+        self.wiggler_map = bp.GeneralVectorPotential(hs=f"{curv}", a=self.a, b=self.b, bs=self.bs)
+
+        self.Bxfun, self.Byfun, self.Bsfun = self.wiggler_map.get_Bfield()
+        Axsympy, Aysympy, Assympy = self.wiggler_map.get_A()
+        symbols = sp.symbols('y s x')
+        self.Axfun = sp.lambdify(symbols, Axsympy, modules='numpy')
+        self.Ayfun = sp.lambdify(symbols, Aysympy, modules='numpy')
+        self.Asfun = sp.lambdify(symbols, Assympy, modules='numpy')
+
     def get_field(self, x, y, s):
         Bx = self.scale * self.Bxfun(x - self.x0, y - self.y0, s)
         By = self.scale * self.Byfun(x - self.x0, y - self.y0, s)
         Bs = self.scale * self.Bsfun(x - self.x0, y - self.y0, s)
         return Bx, By, Bs
+
+    # Order of arguments: s, x, y
+    # Because that's how it was constructed in bpmeth.
+    def get_vector_potential(self, x, y, s):
+        Ax = self.scale * self.Axfun(y - self.y0, s, x - self.x0)
+        Ay = self.scale * self.Ayfun(y - self.y0, s, x - self.x0)
+        As = self.scale * self.Asfun(y - self.y0, s, x - self.x0)
+        return Ax, Ay, As
 
 class WigglerFull:
     def __init__(self, WigglerFieldFitter):
@@ -798,19 +808,30 @@ class WigglerFull:
             # Out of range: use last segment (or clamp)
             seg = self.segments[-1]
 
-        Bx = seg.Bxfun(x, y, s)
-        By = seg.Byfun(x, y, s)
-        Bs = seg.Bsfun(x, y, s)
-        return Bx, By, Bs
+        return seg.get_field(x, y, s)
 
-    def plot_fields(self, x=0.0, y=0.0, n_points=1000):
+    def get_vector_potential(self, x, y, s):
+        seg = None
+        for seg_candidate in self.segments:
+            s0 = seg_candidate.s0
+            s1 = s0 + seg_candidate.length
+            if s0 <= s <= s1:
+                seg = seg_candidate
+                break
+        if seg is None:
+            # Out of range: use last segment (or clamp)
+            seg = self.segments[-1]
+
+        # Order of arguments: s, x, y
+        # Because that's how it was constructed in bpmeth.
+        # The original order was kept in the get_vector_potential to prevent confusion.
+        return seg.get_vector_potential(x, y, s)
+
+    def plot_fields(self, x=0.0, y=0.0, n_points=1000, plot_data=False):
         # Define the longitudinal range
         s_start = self.segments[0].s0
         s_end = self.segments[-1].s0 + self.segments[-1].length
         s_vals = np.linspace(s_start, s_end, n_points)
-        temp_field_fitter = self.field_fitter
-        temp_field_fitter.xy_point = (x*1000, y*1000)
-        temp_field_fitter.select_xy()
 
         Bx_vals, By_vals, Bs_vals = [], [], []
 
@@ -822,11 +843,17 @@ class WigglerFull:
 
         plt.figure(figsize=(10, 5))
         plt.plot(s_vals, Bx_vals, label=r"$B_x$ (bpmeth)")
-        plt.plot(temp_field_fitter.s_full, temp_field_fitter.raw_data[0]['Bx'], label=r"$B_x$ (data)")
         plt.plot(s_vals, By_vals, label=r"$B_y$ (bpmeth)")
-        plt.plot(temp_field_fitter.s_full, temp_field_fitter.raw_data[0]['By'], label=r"$B_y$ (data)")
         plt.plot(s_vals, Bs_vals, label=r"$B_s$ (bpmeth)")
-        plt.plot(temp_field_fitter.s_full, temp_field_fitter.raw_data[0]['Bs'], label=r"$B_s$ (data)")
+
+        if plot_data:
+            temp_field_fitter = self.field_fitter
+            temp_field_fitter.xy_point = (x * 1000, y * 1000)
+            temp_field_fitter.select_xy()
+            plt.plot(temp_field_fitter.s_full, temp_field_fitter.raw_data[0]['Bx'], label=r"$B_x$ (data)")
+            plt.plot(temp_field_fitter.s_full, temp_field_fitter.raw_data[0]['By'], label=r"$B_y$ (data)")
+            plt.plot(temp_field_fitter.s_full, temp_field_fitter.raw_data[0]['Bs'], label=r"$B_s$ (data)")
+
         plt.xlabel("s [m]")
         plt.ylabel("Magnetic field [T]")
         plt.title(f"Wiggler fields along s at x={x:.3f}, y={y:.3f}")
@@ -835,6 +862,28 @@ class WigglerFull:
         plt.tight_layout()
         plt.show()
 
+    def plot_vector_potential(self, x=0.0, y=0.0, n_points=1000):
+        # Define the longitudinal range
+        s_start = self.segments[0].s0
+        s_end = self.segments[-1].s0 + self.segments[-1].length
+        s_vals = np.linspace(s_start, s_end, n_points)
 
+        Ax_vals, Ay_vals, As_vals = [], [], []
 
+        for s in s_vals:
+            Ax, Ay, As = self.get_vector_potential(x, y, s)
+            Ax_vals.append(Ax)
+            Ay_vals.append(Ay)
+            As_vals.append(As)
 
+        plt.figure(figsize=(10, 5))
+        plt.plot(s_vals, Ax_vals, label=r"$A_x$")
+        plt.plot(s_vals, Ay_vals, label=r"$A_y$")
+        plt.plot(s_vals, As_vals, label=r"$A_s$")
+        plt.xlabel("s [m]")
+        plt.ylabel("Vector Potential [T·m]")
+        plt.title(f"Wiggler vector potential along s at x={x:.3f}, y={y:.3f}")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
