@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import scipy as sc
 import sympy as sp
-from sympy import simplify
+import xtrack as xt
 
 import bpmeth as bp
 import time
@@ -65,6 +65,7 @@ class WigglerFieldFitter:
 
         self.df = None
         self.s_full = None
+        self.length = None
         self.deg = deg
 
         # Dictionary that holds a list of borders for each field
@@ -145,6 +146,7 @@ class WigglerFieldFitter:
         subset = self.df.xs(self.xy_point, level=["X", "Y"]).sort_index()
 
         self.s_full = subset.index.to_numpy() * self.ds
+        self.length = self.s_full[-1] - self.s_full[0]
 
         # Store the raw data for each field.
 
@@ -746,6 +748,8 @@ class WigglerFull:
     def __init__(self, WigglerFieldFitter):
         self.field_fitter = WigglerFieldFitter
         self.segments = []
+        self.integrator = []
+        self.n_slices = 0
 
     def set_segments(self):
         N = self.field_fitter.deg + 1  # number of derivatives per field
@@ -795,6 +799,18 @@ class WigglerFull:
                 curv=0.0,
             )
             self.segments.append(seg)
+
+    def set_integrator(self, n_slices=1000, n_steps = 1000):
+        self.n_slices = n_slices
+        l_wig = self.field_fitter.length
+
+        s_cuts = np.linspace(0, l_wig, n_slices + 1)
+        #s_mid = 0.5 * (s_cuts[:-1] + s_cuts[1:])
+        for ii in range(n_slices):
+            wig = xt.BorisSpatialIntegrator(fieldmap_callable=self.get_field, s_start=s_cuts[ii], s_end=s_cuts[ii + 1],
+                                            n_steps=np.round(n_steps / n_slices).astype(int),
+                                            verbose=True)
+            self.integrator.append(wig)
 
     def get_field(self, x, y, s):
         seg = None

@@ -88,7 +88,7 @@ start_time = time.time()
 Bxfun, Byfun, Bsfun = wiggler_map.get_Bfield()
 end_time = time.time()
 print(f"Time to create field functions: {end_time - start_time:.6f} seconds")
-prrrr
+
 class MyWiggler:
     def __init__(self, Bx_fun, By_fun, Bs_fun, s0=0, x0=0, y0=0):
         self.Bx_fun = Bx_fun
@@ -106,6 +106,7 @@ class MyWiggler:
         return Bx, By, Bs
 
 mywig = MyWiggler(Bxfun, Byfun, Bsfun, s0=-1.1, x0=x0)
+
 
 p0 = xt.Particles(mass0=xt.ELECTRON_MASS_EV, q0=1,
                   energy0=2.4e9)
@@ -125,6 +126,8 @@ for ii in range(n_slices):
                                  n_steps=np.round(n_steps / n_slices).astype(int),
                                  verbose=True)
     wig_slices.append(wig)
+
+# NOTE: The class can now basically execute this code until here.
 
 Bx_mid, By_mid, Bs_mid = wig_slices[0].fieldmap_callable(0, 0, s_mid)
 print('extracting a1, b1, a3, b3 at mid points')
