@@ -1,4 +1,4 @@
-from wiggler_class import WigglerFieldFitter
+from wiggler_class_old import WigglerFieldFitter
 from scipy import signal
 import bpmeth as bp
 import matplotlib.pyplot as plt

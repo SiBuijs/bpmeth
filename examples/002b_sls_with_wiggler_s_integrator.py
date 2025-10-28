@@ -1,12 +1,14 @@
-from wiggler_class import WigglerFieldFitter
+from examples.wiggler_class_test import start_time
+from wiggler_class_old import WigglerFieldFitter
 from scipy import signal
 import bpmeth as bp
 import matplotlib.pyplot as plt
 import numpy as np
 
 import xtrack as xt
+import time
 
-
+start_time = time.time()
 delta_chrom = 1e-4
 # deltas = [-2*delta_chrom, -delta_chrom, 0, delta_chrom, 2*delta_chrom]
 deltas = [-delta_chrom, delta_chrom]
@@ -215,7 +217,9 @@ env.vars.update(
 
 print('Twiss wiggler only')
 tw_wig_only = wiggler.twiss(include_collective=True, betx=1, bety=1)
-
+end_time = time.time()
+print(f"Time to compute twiss wiggler only: {end_time - start_time} seconds")
+prrrrrr
 wiggler_places = [
     'ars02_uind_0500_1',
     'ars03_uind_0380_1',
