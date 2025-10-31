@@ -782,6 +782,19 @@ class WigglerFieldFitter:
 # This class takes the a_n, b_n and b_s coefficients from the WigglerFieldFitter
 # It generates the magnetic field functions using bpmeth's GeneralVectorPotential, which it stores as attributes
 # It is meant to only store one single segment
+
+# Workflow for next step:
+# - Let GeneralVectorPotential generate from a symbolic expression
+# - Use GeneralVectorPotential.get_Bfield(lambdify=False) to get Bx, By, Bs functions
+# - Use GeneralVectorPotential.get_A() to get Ax, Ay, As functions
+#   - These functions are still symbolic expressions
+#   - The shape of these functions can be either a sinusoid or a polynomial, depending on the parameters from WigglerFieldFitter
+# - These expressions can be "recycled" by copying them and substituting the coefficients for a particular segment in them
+# - After this whole process, we lambdify (or numbafy)? Is supposedly faster.
+
+# TODO:
+# - Generic symbolic expressions are part of WigglerFull
+# -
 class WigglerSegment:
     def __init__(self, a_list, b_list, bs, s0=0, length=0, x0=0, y0=0, curv=0):
         self.s0 = s0
@@ -800,12 +813,13 @@ class WigglerSegment:
 
         self.wiggler_map = bp.GeneralVectorPotential(hs=f"{curv}", a=self.a, b=self.b, bs=self.bs)
 
+        self.Bxexpr, self.Byexpr, self.Bsexpr = self.wiggler_map.get_Bfield(lambdify=False)
         self.Bxfun, self.Byfun, self.Bsfun = self.wiggler_map.get_Bfield()
-        Axsympy, Aysympy, Assympy = self.wiggler_map.get_A()
+        self.Axexpr, self.Ayexpr, self.Asexpr = self.wiggler_map.get_A()
         symbols = sp.symbols('y s x')
-        self.Axfun = sp.lambdify(symbols, Axsympy, modules='numpy')
-        self.Ayfun = sp.lambdify(symbols, Aysympy, modules='numpy')
-        self.Asfun = sp.lambdify(symbols, Assympy, modules='numpy')
+        self.Axfun = sp.lambdify(symbols, self.Axexpr, modules='numpy')
+        self.Ayfun = sp.lambdify(symbols, self.Ayexpr, modules='numpy')
+        self.Asfun = sp.lambdify(symbols, self.Asexpr, modules='numpy')
 
     def get_field(self, x, y, s):
         Bx = self.scale * self.Bxfun(x - self.x0, y - self.y0, s)
@@ -821,6 +835,7 @@ class WigglerSegment:
         As = self.scale * self.Asfun(y - self.y0, s, x - self.x0)
         return Ax, Ay, As
 
+
 class WigglerFull:
     def __init__(self, WigglerFieldFitter):
         self.field_fitter = WigglerFieldFitter
@@ -829,6 +844,23 @@ class WigglerFull:
         self.n_slices = 0
         self.env = None
         self.wiggler_line = None
+
+        self._set_generic_expr()
+
+    def _set_generic_expr(self):
+        # determine maximum polynomial degree used for edges across all fields,
+        # then create tuples of symbols a0..aN and b0..bN (constant term first)
+        a_syms = ()
+        b_syms = ()
+        bs_sym = (sp.symbols('b_s0'),)
+        for field in ["Bx", "By", "Bs"]:
+            degree = max(self.field_fitter.shapes[field]["poly_deg_L"], self.field_fitter.shapes[field]["poly_deg_R"])
+            for n in range(degree + 1):
+                a_syms += (sp.symbols(f'a_{field}_{n}'),)
+                b_syms += (sp.symbols(f'b_{field}_{n}'),)
+
+        self.generic_poly_expr = bp.GeneralVectorPotential(hs='0.0', a=a_syms, b=b_syms, bs=bs_sym)
+        self.generic_sine_expr = bp.GeneralVectorPotential(hs='0.0', a=a_syms, b=b_syms, bs=bs_sym)
 
     def set_segments(self):
         N = self.field_fitter.deg + 1  # number of derivatives per field

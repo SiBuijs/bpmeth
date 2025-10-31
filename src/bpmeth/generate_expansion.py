@@ -17,17 +17,19 @@ def phinplus2(phi, x, s, hs):
 class FieldExpansion:
     def __init__(self, a=(), b=(), bs="0", hs="0", nphi=5):
         self.x, self.y, self.s = sp.symbols("x y s", real=True)
-        self.a = tuple(eval(aa, sp.__dict__, {"s": self.s}) if isinstance(aa, str) else aa.subs(sp.Symbol("s"), self.s) for aa in a) 
-        self.b = tuple(eval(bb, sp.__dict__, {"s": self.s}) if isinstance(bb, str) else bb.subs(sp.Symbol("s"), self.s) for bb in b) 
-        self.bs = eval(bs, sp.__dict__, {"s": self.s}) if isinstance(bs, str) else bs.subs(sp.Symbol("s"), self.s)
-        self.hs = eval(hs, sp.__dict__, {"s": self.s}) if isinstance(hs, str) else hs.subs(sp.Symbol("s"), self.s)
-        self.nphi = nphi
-        self._B_expr = None  # cached (Bx, By, Bs) sympy expressions with coefficients substituted
-        self._B_funcs = None  # cached (Bxfun, Byfun, Bsfun) numpy-callable lambdas
 
-        self.afun = [sp.Function(f"a{i+1}")(self.s) for i, an in enumerate(a)]
-        self.bfun = [sp.Function(f"b{i+1}")(self.s) for i, bn in enumerate(b)]
-        self.bsfun = sp.Function("bs")(self.s) if self.bs!=0 else sp.Integer(0)
+        self.a = tuple(sp.sympify(aa, locals={"s": self.s}) for aa in a)
+        self.b = tuple(sp.sympify(bb, locals={"s": self.s}) for bb in b)
+        self.bs = sp.sympify(bs, locals={"s": self.s})
+        self.hs = sp.sympify(hs, locals={"s": self.s})
+
+        self.nphi = nphi
+        self._B_expr = None
+        self._B_funcs = None
+
+        self.afun = [sp.Function(f"a{i + 1}")(self.s) for i in range(len(a))]
+        self.bfun = [sp.Function(f"b{i + 1}")(self.s) for i in range(len(b))]
+        self.bsfun = sp.Function("bs")(self.s) if self.bs != 0 else sp.Integer(0)
 
     @staticmethod
     def _pw_diff(expr, s, n):
