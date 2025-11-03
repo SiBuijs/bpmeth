@@ -127,6 +127,36 @@ class WigglerFieldFitter:
 
         return y
 
+    # PRIVATE
+    # Polynomials, which coefficients are determined by the boundary conditions and integral over the interval.
+    @staticmethod
+    def _f_poly(x0, x1, c1, c2, c3, c4, c5):
+        L = x1 - x0
+        t = np.polynomial.Polynomial([-x0 / L, 1 / L])
+
+        # basis functions on [0,1]
+        b1_coeffs = [1, 0, -18, 32, -15]
+        b2_coeffs = [0, 1, -4.5, 6, -2.5]
+        b3_coeffs = [0, 0, -12, 28, -15]
+        b4_coeffs = [0, 0, 1.5, -4, 2.5]
+        b5_coeffs = [0, 0, 30, -60, 30]
+        b1_poly = np.polynomial.Polynomial(b1_coeffs)
+        b2_poly = np.polynomial.Polynomial(b2_coeffs)
+        b3_poly = np.polynomial.Polynomial(b3_coeffs)
+        b4_poly = np.polynomial.Polynomial(b4_coeffs)
+        b5_poly = np.polynomial.Polynomial(b5_coeffs)
+
+        # combine with correct scaling for derivatives/integral
+        poly_t = c1 * b1_poly + L * c2 * b2_poly + c3 * b3_poly + L * c4 * b4_poly + (c5 / L) * b5_poly
+        poly_x = poly_t(t)
+        return poly_x
+
+    # Workflow:
+    # 1. Define the interval [x0, x1]: We know this from the slices.
+    # 2. Compute the function value and derivative at the sinusoidal side (analytically), gives c_3 and c_4 (left side) or c_1 and c_2 (right side).
+    # 3. Compute the function value and derivative at the "data side" (numerically), gives c_1 and c_2 (left side) or c_3 and c_4 (right side).
+    # 4. Compute the integral over the interval (numerically), gives c_5.
+    # 5. This immediately gives the polynomial coefficients for that slice.
 
     ####################################################################################################################
     # IDENTIFYING REGIONS AND SETTING BORDERS IN DATA CLASSES
