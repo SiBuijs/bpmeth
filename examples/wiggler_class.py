@@ -38,8 +38,8 @@ class WigglerFieldFitter:
             dy=0.001,
             ds=0.001,
             peak_window=(100, 2100),
-            n_modes=[3, 3, 3],
-            poly_deg = [[3, 3], [3, 3], [3, 3]],
+            n_modes=6,
+            poly_pieces=[[15, 15], [15, 15], [15, 15]],
             deg=0,
             filter_params=None,
     ):
@@ -48,18 +48,16 @@ class WigglerFieldFitter:
         self.xy_point = xy_point
         self.dx, self.dy, self.ds = dx, dy, ds
         self.peak_window = peak_window
+        self.n_modes = n_modes
 
         # NOTE: Filter noise is now only used for the right tails, because those are noisy.
         # We can add a more general functionality later.
         self.filter_params = filter_params
 
         self.shapes = {
-            "Bx": {"n_modes": n_modes[0], "poly_deg_L": poly_deg[0][0], "poly_deg_R": poly_deg[0][1],
-                   "n_pieces_L": None, "n_pieces_R": None},
-            "By": {"n_modes": n_modes[1], "poly_deg_L": poly_deg[1][0], "poly_deg_R": poly_deg[1][1],
-                   "n_pieces_L": None, "n_pieces_R": None},
-            "Bs": {"n_modes": n_modes[2], "poly_deg_L": poly_deg[2][0], "poly_deg_R": poly_deg[2][1],
-                   "n_pieces_L": None, "n_pieces_R": None},
+            "Bx": {"n_pieces_L": poly_pieces[0][0], "n_pieces_R": poly_pieces[0][1]},
+            "By": {"n_pieces_L": poly_pieces[1][0], "n_pieces_R": poly_pieces[1][1]},
+            "Bs": {"n_pieces_L": poly_pieces[2][0], "n_pieces_R": poly_pieces[2][1]},
         }
 
         self.df = None
@@ -94,7 +92,7 @@ class WigglerFieldFitter:
             self._filter_noise()
         self._find_regions()
         self._fit_sinusoids()
-        self._optimize_poly_pieces()
+        self._fit_edges()
 
 
 
@@ -130,7 +128,8 @@ class WigglerFieldFitter:
     # PRIVATE
     # Polynomials, which coefficients are determined by the boundary conditions and integral over the interval.
     @staticmethod
-    def _f_poly(x0, x1, c1, c2, c3, c4, c5):
+    def _poly(x0, x1, coeffs):
+        c1, c2, c3, c4, c5 = coeffs
         L = x1 - x0
         t = np.polynomial.Polynomial([-x0 / L, 1 / L])
 
@@ -324,14 +323,12 @@ class WigglerFieldFitter:
                 else:
                     field_reg = self.trans_der2[field][sin_slice]
 
-                n_modes = self.shapes[field]["n_modes"]
+                cos_amps, sin_amps, k_modes = self._find_modes(s_reg, field_reg, self.ds, self.n_modes)
 
-                cos_amps, sin_amps, k_modes = self._find_modes(s_reg, field_reg, self.ds, n_modes)
-
-                p0 = np.zeros(n_modes * 3 + 1)
+                p0 = np.zeros(self.n_modes * 3 + 1)
                 p0[-1] = float(np.mean(field_reg))  # DC guess
 
-                for ii in range(n_modes):
+                for ii in range(self.n_modes):
                     p0[3 * ii + 0] = cos_amps[ii]
                     p0[3 * ii + 1] = sin_amps[ii]
                     p0[3 * ii + 2] = k_modes[ii]
@@ -365,15 +362,13 @@ class WigglerFieldFitter:
             fR += Ac * np.cos(k * xR) + As * np.sin(k * xR)
             dL += k * (As * np.cos(k * xL) - Ac * np.sin(k * xL))
             dR += k * (As * np.cos(k * xR) - Ac * np.sin(k * xR))
-            ddL += -(k * k) * (Ac * np.cos(k * xL) + As * np.sin(k * xL))
-            ddR += -(k * k) * (Ac * np.cos(k * xR) + As * np.sin(k * xR))
 
         if (len(params) % 3) == 1:
             c0 = params[-1]
             fL += c0
             fR += c0
 
-        return np.array([fL, fR, dL, dR, ddL, ddR], dtype=float)
+        return np.array([fL, fR, dL, dR], dtype=float)
 
     # PRIVATE
     # This method computes the boundary conditions from a previously fitted polynomial.
@@ -381,8 +376,8 @@ class WigglerFieldFitter:
     # dp and ddp are the first and second derivatives of the polynomial.
     def _boundary_from_poly(self, s_prev, poly):
         xL, xR = s_prev[0] - self.ds, s_prev[-1] + self.ds
-        dp, ddp = poly.deriv(), poly.deriv(2)
-        return np.array([poly(xL), poly(xR), dp(xL), dp(xR), ddp(xL), ddp(xR)], dtype=float)
+        dp = poly.deriv()
+        return np.array([poly(xL), poly(xR), dp(xL), dp(xR)], dtype=float)
 
     # PRIVATE
     # This slices a region into num_regions slices of (approximately) equal size.
@@ -397,7 +392,7 @@ class WigglerFieldFitter:
             start = end
         return slices
 
-    def _fit_poly_side(self, field, poly_deg, s_region, b_region, s_mid, num_slices, left_side, der_order):
+    def _fit_poly_side(self, field, s_region, b_region, s_mid, num_slices, left_side, der_order):
         slices = self._balanced_slices(len(s_region), num_slices)
         # fit order: first piece next to the center, then outward
         slices_proc = list(reversed(slices)) if left_side else slices
@@ -409,60 +404,23 @@ class WigglerFieldFitter:
 
         for ix, s in enumerate(slices_proc):
             s_this, b_this = s_region[s], b_region[s]
+            integral_this = sc.integrate.trapezoid(b_this, s_this)
             if ix == 0:
                 boundaries = self._boundary_from_sine(field, s_mid, der_order)
             else:
                 boundaries = self._boundary_from_poly(prev_s, prev_poly)
 
-            # ---- same constrained poly_fit logic you already have ----
-            if poly_deg >= 5:
-                if left_side:
-                    dbL = (-3 * b_this[0] + 4 * b_this[1] - b_this[2]) / (2 * self.ds)
-                    d2L = (2 * b_this[0] - 5 * b_this[1] + 4 * b_this[2] - b_this[3]) / (self.ds ** 2)
-                    coeffs = poly_fit.poly_fit(
-                        N=poly_deg, xdata=s_this, ydata=b_this,
-                        x0=[s_this[0], s_this[-1]], y0=[b_this[0], boundaries[0]],
-                        xp0=[s_this[0], s_this[-1]], yp0=[dbL, boundaries[2]],
-                        xpp0=[s_this[0], s_this[-1]], ypp0=[d2L, boundaries[4]]
-                    )
-                else:
-                    dbR = (3 * b_this[-1] - 4 * b_this[-2] + b_this[-3]) / (2 * self.ds)
-                    d2R = (2 * b_this[-1] - 5 * b_this[-2] + 4 * b_this[-3] - b_this[-4]) / (self.ds ** 2)
-                    coeffs = poly_fit.poly_fit(
-                        N=poly_deg, xdata=s_this, ydata=b_this,
-                        x0=[s_this[0], s_this[-1]], y0=[boundaries[1], b_this[-1]],
-                        xp0=[s_this[0], s_this[-1]], yp0=[boundaries[3], dbR],
-                        xpp0=[s_this[0], s_this[-1]], ypp0=[d2R, boundaries[5]]
-                    )
-            elif poly_deg >= 3:
-                if left_side:
-                    dbL = (-3 * b_this[0] + 4 * b_this[1] - b_this[2]) / (2 * self.ds)
-                    coeffs = poly_fit.poly_fit(
-                        N=poly_deg, xdata=s_this, ydata=b_this,
-                        x0=[s_this[0], s_this[-1]], y0=[b_this[0], boundaries[0]],
-                        xp0=[s_this[0], s_this[-1]], yp0=[dbL, boundaries[2]]
-                    )
-                else:
-                    dbR = (3 * b_this[-1] - 4 * b_this[-2] + b_this[-3]) / (2 * self.ds)
-                    coeffs = poly_fit.poly_fit(
-                        N=poly_deg, xdata=s_this, ydata=b_this,
-                        x0=[s_this[0], s_this[-1]], y0=[boundaries[1], b_this[-1]],
-                        xp0=[s_this[0], s_this[-1]], yp0=[boundaries[3], dbR]
-                    )
+            if left_side:
+                dbL = (-3 * b_this[0] + 4 * b_this[1] - b_this[2]) / (2 * self.ds)
+                coeffs = (b_this[0], dbL, boundaries[0], boundaries[2], integral_this)
             else:
-                if left_side:
-                    coeffs = poly_fit.poly_fit(
-                        N=poly_deg, xdata=s_this, ydata=b_this,
-                        x0=[s_this[0], s_this[-1]], y0=[b_this[0], boundaries[0]]
-                    )
-                else:
-                    coeffs = poly_fit.poly_fit(
-                        N=poly_deg, xdata=s_this, ydata=b_this,
-                        x0=[s_this[0], s_this[-1]], y0=[boundaries[1], b_this[-1]]
-                    )
+                dbR = (3 * b_this[-1] - 4 * b_this[-2] + b_this[-3]) / (2 * self.ds)
+                coeffs = (boundaries[1], boundaries[3], b_this[-1], dbR, integral_this)
             # ----------------------------------------------------------
 
-            poly = Polynomial(coeffs)
+            x0 = float(s_this[0])
+            x1 = float(s_this[-1])
+            poly = self._poly(x0, x1, coeffs)
             fit_reg[s] = poly(s_this)
             pieces.append((s.start, poly))
             prev_poly, prev_s = poly, s_this
@@ -472,103 +430,43 @@ class WigglerFieldFitter:
         borders = [float(s_region[0])] + [float(s_region[sl.stop - 1]) for sl in slices_ord]
         return fit_reg, pieces, borders
 
-    def _fit_edges(self, field="Bx"):
-        for der_order in range(self.deg+1):
-            # center region slice and grid
-            i0, i1 = self.borders_idx[field]
-            s_mid = self.s_full[i0:i1]
-
-            # tails
-            s_left = self.s_full[:i0]
-            s_right = self.s_full[i1:]
-            b_left = self.raw_data[der_order][field][:i0]
-            b_right = self.raw_data[der_order][field][i1:]
-
-            # degrees + number of chained pieces per side (configurable)
-            degL = int(self.shapes[field]["poly_deg_L"])
-            degR = int(self.shapes[field]["poly_deg_R"])
-            nL = int(self.shapes[field]["n_pieces_L"])
-            nR = int(self.shapes[field]["n_pieces_R"])
-            fitL, piecesL, bordersL = self._fit_poly_side(field, degL, s_left, b_left, s_mid, nL, left_side=True,
-                                                          der_order=der_order)
-            self.fit_data[der_order][field][:i0] = fitL
-
-            nR = min(nR, max(1, len(s_right)))
-            fitR, piecesR, bordersR = self._fit_poly_side(field, degR, s_right, b_right, s_mid, nR, left_side=False,
-                                                          der_order=der_order)
-            self.fit_data[der_order][field][i1:] = fitR
-
-            # after computing fitL/piecesL and fitR/piecesR:
-            self.fit_data[der_order][field][:i0] = fitL
-            self.fit_data[der_order][field][i1:] = fitR
-
-            # NEW: store coefficients (ascending-power) for exporter
-            self.fit_pars[der_order][field]["edge_L"] = [p[1].coef for p in piecesL]  # order: near-center -> far-left
-            self.fit_pars[der_order][field]["edge_R"] = [p[1].coef for p in piecesR]  # order: near-center -> far-right
-
-            # existing border assembly (kept)
-            self.poly_borders[field] = bordersL[:-1] + [float(self.s_full[i0]), float(self.s_full[i1])] + bordersR[1:]
-
-    def _optimize_poly_pieces(self, n_min=5, n_max=30):
-        start_time = time.time()
+    def _fit_edges(self):
         if self.Bs_fit:
             fields = ["Bx", "By", "Bs"]
         else:
             fields = ["Bx", "By"]
-        """
-        For each magnetic field component (Bx, By, Bs), finds the combination of
-        (n_pieces_L, n_pieces_R) minimizing the integrated-field error.
-
-        Returns:
-            best_combos: dict {field: (nL, nR, min_error)}
-            results: dict {field: DataFrame of scan results}
-        """
-        best_combos = {}
-        results = {}
-
         for field in fields:
-            best_err = np.inf
-            best_pair = None
-            scan_data = []
-            n_values = np.arange(n_min, n_max + 1)
+            for der_order in range(self.deg+1):
+                # center region slice and grid
+                i0, i1 = self.borders_idx[field]
+                s_mid = self.s_full[i0:i1]
 
-            for nL in n_values:
-                for nR in n_values:
-                    # set current configuration for this field
-                    self.shapes[field]["n_pieces_L"] = nL
-                    self.shapes[field]["n_pieces_R"] = nR
+                # tails
+                s_left = self.s_full[:i0]
+                s_right = self.s_full[i1:]
+                b_left = self.raw_data[der_order][field][:i0]
+                b_right = self.raw_data[der_order][field][i1:]
 
-                    # perform fit only for this field
-                    self._fit_edges(field)
+                # degrees + number of chained pieces per side (configurable)
+                nL = int(self.shapes[field]["n_pieces_L"])
+                nR = int(self.shapes[field]["n_pieces_R"])
+                fitL, piecesL, bordersL = self._fit_poly_side(field, s_left, b_left, s_mid, nL, left_side=True,
+                                                              der_order=der_order)
+                self.fit_data[der_order][field][:i0] = fitL
+                fitR, piecesR, bordersR = self._fit_poly_side(field, s_right, b_right, s_mid, nR, left_side=False,
+                                                              der_order=der_order)
+                self.fit_data[der_order][field][i1:] = fitR
 
-                    # compute integrated-field error for this field only
-                    raw_int = sc.integrate.trapezoid(self.raw_data[0][field], self.s_full)
-                    fit_int = sc.integrate.trapezoid(self.fit_data[0][field], self.s_full)
-                    err = (raw_int - fit_int) ** 2
+                # after computing fitL/piecesL and fitR/piecesR:
+                self.fit_data[der_order][field][:i0] = fitL
+                self.fit_data[der_order][field][i1:] = fitR
 
-                    scan_data.append((nL, nR, err))
+                # NEW: store coefficients (ascending-power) for exporter
+                self.fit_pars[der_order][field]["edge_L"] = [p[1].coef for p in piecesL]  # order: near-center -> far-left
+                self.fit_pars[der_order][field]["edge_R"] = [p[1].coef for p in piecesR]  # order: near-center -> far-right
 
-                    if err < best_err:
-                        best_err = err
-                        best_pair = (nL, nR)
-
-            # store results
-            best_combos[field] = (*best_pair, best_err)
-            results[field] = pd.DataFrame(scan_data, columns=["nL", "nR", "error"])
-
-        self.best_poly_combos = best_combos
-        self.poly_scan_results = results
-        end_time = time.time()
-        print(f"Optimization of edges completed in {end_time - start_time:.2f} seconds.")
-        return best_combos, results
-
-    # LOGIC:
-    # Construct array, for example from 5 to 30
-    # Loop over arrays for each side
-    # Fit polynomials for each entry of the array
-    # Compute the integral of the fitted data
-    # Compute error like (integral of raw data - integral of fitted data)^2
-    # Choose number of polynomials that minimizes the error
+                # existing border assembly (kept)
+                self.poly_borders[field] = bordersL[:-1] + [float(self.s_full[i0]), float(self.s_full[i1])] + bordersR[1:]
 
     ####################################################################################################################
     # TRANSVERSE GRADIENTS
@@ -831,38 +729,40 @@ class WigglerSegment:
         self.length = length
         self.x0 = x0
         self.y0 = y0
-        self.scale = 1.
+        self.scale = 1.0
 
         self.bs = bs
-        self.a = ()
-        self.b = ()
+        self.a = tuple(a_list)
+        self.b = tuple(b_list)
+        self.curv = curv
 
-        for ii in range(len(a_list)):
-            self.a += (a_list[ii],)
-            self.b += (b_list[ii],)
+        # bpmeth objects / expressions / callables (constructed lazily)
+        self.wiggler_map = None
 
-        self.wiggler_map = bp.GeneralVectorPotential(hs=f"{curv}", a=self.a, b=self.b, bs=self.bs)
+        self.Bxexpr = None
+        self.Byexpr = None
+        self.Bsexpr = None
+        self.Bxfun = None
+        self.Byfun = None
+        self.Bsfun = None
 
-        self.Bxexpr, self.Byexpr, self.Bsexpr = self.wiggler_map.get_Bfield(lambdify=False)
-        self.Bxfun, self.Byfun, self.Bsfun = self.wiggler_map.get_Bfield()
-        self.Axexpr, self.Ayexpr, self.Asexpr = self.wiggler_map.get_A()
-        symbols = sp.symbols('y s x')
-        self.Axfun = sp.lambdify(symbols, self.Axexpr, modules='numpy')
-        self.Ayfun = sp.lambdify(symbols, self.Ayexpr, modules='numpy')
-        self.Asfun = sp.lambdify(symbols, self.Asexpr, modules='numpy')
+        self.Axexpr = None
+        self.Ayexpr = None
+        self.Asexpr = None
+        self.Axfun = None
+        self.Ayfun = None
+        self.Asfun = None
 
     def get_field(self, x, y, s):
-        Bx = self.scale * self.Bxfun(x - self.x0, y - self.y0, s)
-        By = self.scale * self.Byfun(x - self.x0, y - self.y0, s)
-        Bs = self.scale * self.Bsfun(x - self.x0, y - self.y0, s)
-        return Bx, By, Bs
+        return (self.scale * self.Bxfun(x - self.x0, y - self.y0, s),
+                self.scale * self.Byfun(x - self.x0, y - self.y0, s),
+                self.scale * self.Bsfun(x - self.x0, y - self.y0, s))
 
-    # Order of arguments: s, x, y
-    # Because that's how it was constructed in bpmeth.
+    # Order of arguments: (x, y, s). Vectorized.
     def get_vector_potential(self, x, y, s):
-        Ax = self.scale * self.Axfun(y - self.y0, s, x - self.x0)
-        Ay = self.scale * self.Ayfun(y - self.y0, s, x - self.x0)
-        As = self.scale * self.Asfun(y - self.y0, s, x - self.x0)
+        Ax = self.scale * self.Axfun(x - self.x0, y - self.y0, s)
+        Ay = self.scale * self.Ayfun(x - self.x0, y - self.y0, s)
+        As = self.scale * self.Asfun(x - self.x0, y - self.y0, s)
         return Ax, Ay, As
 
 
@@ -876,21 +776,155 @@ class WigglerFull:
         self.wiggler_line = None
 
         self._set_generic_expr()
+        self.set_segments()
 
     def _set_generic_expr(self):
-        # determine maximum polynomial degree used for edges across all fields,
-        # then create tuples of symbols a0..aN and b0..bN (constant term first)
-        a_syms = ()
-        b_syms = ()
-        bs_sym = (sp.symbols('b_s0'),)
-        for field in ["Bx", "By", "Bs"]:
-            degree = max(self.field_fitter.shapes[field]["poly_deg_L"], self.field_fitter.shapes[field]["poly_deg_R"])
-            for n in range(degree + 1):
-                a_syms += (sp.symbols(f'a_{field}_{n}'),)
-                b_syms += (sp.symbols(f'b_{field}_{n}'),)
+        # build symbolic multi-mode (co)sine expressions according to max modes in fitter# build symbolic multi-mode (co)sine expressions according to max modes in fitter
+        n_modes = self.field_fitter.n_modes
+        s = sp.symbols("s")
+        curv = 0
 
-        self.generic_poly_expr = bp.GeneralVectorPotential(hs='0.0', a=a_syms, b=b_syms, bs=bs_sym)
-        self.generic_sine_expr = bp.GeneralVectorPotential(hs='0.0', a=a_syms, b=b_syms, bs=bs_sym)
+        Ac_syms = sp.symbols(f"Ac0:{n_modes}")
+        As_syms = sp.symbols(f"As0:{n_modes}")
+        k_syms = sp.symbols(f"k0:{n_modes}")
+
+        b_sine_expr = sp.Integer(0)
+        a_sine_expr = sp.Integer(0)
+        for Ac, As, k in zip(Ac_syms, As_syms, k_syms):
+            b_sine_expr += Ac * sp.cos(k * s)
+            a_sine_expr += As * sp.sin(k * s)
+
+        # Also build generic polynomial expressions of degree 4 for a and b
+        deg_poly = 4
+        a_p_syms = sp.symbols(f"a_0:{deg_poly+1}")
+        b_p_syms = sp.symbols(f"b_0:{deg_poly+1}")
+        a_poly_expr = sum(coef * s**i for i, coef in enumerate(a_p_syms))
+        b_poly_expr = sum(coef * s**i for i, coef in enumerate(b_p_syms))
+
+        # Changed GeneralVectorPotential to accept expressions with free parameters such as Ac_i, As_i, k_i.
+        # Pass the sympy expressions as strings (bpmeth/bp accepts string expressions)
+        # self.generic_sine_A = (Ax, Ay, As)
+        # self.generic_sine_B = (Bx, By, Bs)
+        # Likewise for generic_poly_A and generic_poly_B
+        generic_sine_bpmeth = bp.GeneralVectorPotential(hs=f"{curv}", a=(f"{a_sine_expr}",), b=(f"{b_sine_expr}",))
+        self.generic_sine_B = generic_sine_bpmeth.get_Bfield(lambdify=False)
+        self.generic_sine_A = generic_sine_bpmeth.get_A()
+
+        generic_poly_bpmeth = bp.GeneralVectorPotential(hs=f"{curv}", a=(f"{a_poly_expr}",), b=(f"{b_poly_expr}",))
+        self.generic_poly_B = generic_poly_bpmeth.get_Bfield(lambdify=False)
+        self.generic_poly_A = generic_poly_bpmeth.get_A()
+
+    def _extract_poly_coeffs(self, expr, deg=4):
+        s = sp.symbols("s")
+        expr = sp.simplify(expr)
+        p = sp.Poly(expr, s)
+        return [float(p.coeff_monomial(s**i)) for i in range(deg + 1)]
+
+    def _extract_sine_params(self, expr, n_modes):
+        """
+        Returns lists Ac, As, k of length n_modes extracted from a sympy expression like
+        sum(Ac_i*cos(k_i*s) + As_i*sin(k_i*s)) + const.
+        If fewer than n_modes distinct k are found, remaining entries are zeros.
+        """
+        s = sp.symbols("s")
+        expr = sp.simplify(expr)
+        # collect by k value
+        mode_map = {}
+        # cos terms
+        for cos_atom in expr.atoms(sp.cos):
+            arg = cos_atom.args[0]
+            k = sp.simplify(arg / s)
+            coeff = float(sp.simplify(expr.coeff(cos_atom)))
+            mode_map.setdefault(k, {"Ac": 0.0, "As": 0.0})["Ac"] = coeff
+        # sin terms
+        for sin_atom in expr.atoms(sp.sin):
+            arg = sin_atom.args[0]
+            k = sp.simplify(arg / s)
+            coeff = float(sp.simplify(expr.coeff(sin_atom)))
+            mode_map.setdefault(k, {"Ac": 0.0, "As": 0.0})["As"] = coeff
+        # order modes by magnitude of k (stable)
+        ks = sorted(list(mode_map.keys()), key=lambda kk: float(abs(kk)) if kk != 0 else 0.0)
+        Ac = [0.0] * n_modes
+        As = [0.0] * n_modes
+        k_vals = [0.0] * n_modes
+        for i, k in enumerate(ks[:n_modes]):
+            Ac[i] = mode_map[k]["Ac"]
+            As[i] = mode_map[k]["As"]
+            k_vals[i] = float(k)
+        return Ac, As, k_vals
+
+    def _lambdify_segment_from_generic(self, seg, deg_poly=4, n_modes=None):
+        """Substitute numeric coefficients into prebuilt generic symbolic expressions."""
+
+        s = sp.symbols("s")
+        if n_modes is None:
+            n_modes = getattr(self.field_fitter, "n_modes", 6)
+
+        # Detect whether to use sine or poly generic
+        def has_trig(expr):
+            return any(isinstance(a, (sp.sin, sp.cos)) for a in expr.atoms(sp.Function))
+
+        a_expr = seg.a[0] if seg.a else sp.Integer(0)
+        b_expr = seg.b[0] if seg.b else sp.Integer(0)
+        use_sine = has_trig(a_expr) or has_trig(b_expr)
+
+        # Choose generic templates
+        if use_sine:
+            Bx_sym, By_sym, Bs_sym = self.generic_sine_B
+            Ax_sym, Ay_sym, As_sym = self.generic_sine_A
+        else:
+            Bx_sym, By_sym, Bs_sym = self.generic_poly_B
+            Ax_sym, Ay_sym, As_sym = self.generic_poly_A
+
+        # Collect substitution dictionary
+        subs = {}
+
+        # Polynomial coefficients
+        if not use_sine:
+            a_coeffs = self._extract_poly_coeffs(a_expr, deg=deg_poly)
+            b_coeffs = self._extract_poly_coeffs(b_expr, deg=deg_poly)
+            for i, val in enumerate(a_coeffs):
+                subs[sp.Symbol(f"a_{i}")] = val
+            for i, val in enumerate(b_coeffs):
+                subs[sp.Symbol(f"b_{i}")] = val
+
+        # Sine coefficients
+        if use_sine:
+            Ac_a, As_a, k_a = self._extract_sine_params(a_expr, n_modes)
+            Ac_b, As_b, k_b = self._extract_sine_params(b_expr, n_modes)
+            for i in range(n_modes):
+                subs[sp.Symbol(f"Ac{i}")] = float(Ac_a[i] or Ac_b[i])
+                subs[sp.Symbol(f"As{i}")] = float(As_a[i] or As_b[i])
+                subs[sp.Symbol(f"k{i}")] = float(k_a[i] or k_b[i] or 0.0)
+
+        # Longitudinal field
+        if isinstance(seg.bs, (int, float)):
+            subs[sp.Symbol("bs")] = float(seg.bs)
+        else:
+            try:
+                subs[sp.Symbol("bs")] = float(sp.N(seg.bs))
+            except Exception:
+                pass
+
+        # Substitute
+        Bx_num = Bx_sym.subs(subs, evaluate=False)
+        By_num = By_sym.subs(subs, evaluate=False)
+        Bs_num = Bs_sym.subs(subs, evaluate=False)
+        Ax_num = Ax_sym.subs(subs, evaluate=False)
+        Ay_num = Ay_sym.subs(subs, evaluate=False)
+        As_num = As_sym.subs(subs, evaluate=False)
+
+        # Lambdify to numpy functions
+        x_sym, y_sym, s_sym = sp.symbols("x y s")
+        seg.Bxfun = sp.lambdify((x_sym, y_sym, s_sym), Bx_num, "numpy")
+        seg.Byfun = sp.lambdify((x_sym, y_sym, s_sym), By_num, "numpy")
+        seg.Bsfun = sp.lambdify((x_sym, y_sym, s_sym), Bs_num, "numpy")
+        seg.Axfun = sp.lambdify((x_sym, y_sym, s_sym), Ax_num, "numpy")
+        seg.Ayfun = sp.lambdify((x_sym, y_sym, s_sym), Ay_num, "numpy")
+        seg.Asfun = sp.lambdify((x_sym, y_sym, s_sym), As_num, "numpy")
+
+        seg.Bxexpr, seg.Byexpr, seg.Bsexpr = Bx_num, By_num, Bs_num
+        seg.Axexpr, seg.Ayexpr, seg.Asexpr = Ax_num, Ay_num, As_num
 
     def set_segments(self):
         N = self.field_fitter.deg + 1  # number of derivatives per field
@@ -941,6 +975,7 @@ class WigglerFull:
                 curv=0.0,
             )
             self.segments.append(seg)
+            self._lambdify_segment_from_generic(seg, deg_poly=4, n_modes=self.field_fitter.n_modes)
 
     def set_integrator(self, n_slices=1000, n_steps = 1000):
         if self.segments == []:
@@ -1065,21 +1100,47 @@ class WigglerFull:
         return Bx, By, Bs
 
     def get_vector_potential(self, x, y, s):
-        seg = None
-        for seg_candidate in self.segments:
-            s0 = seg_candidate.s0
-            s1 = s0 + seg_candidate.length
-            if s0 <= s <= s1:
-                seg = seg_candidate
-                break
-        if seg is None:
-            # Out of range: use last segment (or clamp)
-            seg = self.segments[-1]
+        """
+        Vectorized vector potential selector: supports scalar or array s.
+        Returns Ax, Ay, As with same broadcasting shape as (x, y, s).
+        """
+        x = np.asarray(x)
+        y = np.asarray(y)
+        s = np.asarray(s)
 
-        # Order of arguments: s, x, y
-        # Because that's how it was constructed in bpmeth.
-        # The original order was kept in the get_vector_potential to prevent confusion.
-        return seg.get_vector_potential(x, y, s)
+        # scalar s -> simple lookup (keeps behavior similar to before)
+        if s.ndim == 0:
+            seg = None
+            for seg_candidate in self.segments:
+                s0 = seg_candidate.s0
+                s1 = s0 + seg_candidate.length
+                if s0 <= float(s) <= s1:
+                    seg = seg_candidate
+                    break
+            if seg is None:
+                seg = self.segments[-1]
+            return seg.get_vector_potential(x, y, s)
+
+        # vectorized path: find segment index per s and compute per-segment
+        seg_edges = np.array([seg.s0 for seg in self.segments] +
+                             [self.segments[-1].s0 + self.segments[-1].length])
+        seg_idx = np.searchsorted(seg_edges, s, side="right") - 1
+        seg_idx = np.clip(seg_idx, 0, len(self.segments) - 1)
+
+        shape = np.broadcast(x, y, s).shape
+        Ax = np.empty(shape)
+        Ay = np.empty(shape)
+        As = np.empty(shape)
+
+        for i, seg in enumerate(self.segments):
+            mask = seg_idx == i
+            if not np.any(mask):
+                continue
+            s_loc = s[mask]
+            Ax_v, Ay_v, As_v = seg.get_vector_potential(x[mask], y[mask], s_loc)
+            Ax[mask], Ay[mask], As[mask] = Ax_v, Ay_v, As_v
+
+        return Ax, Ay, As
 
     def plot_fields(self, x=0.0, y=0.0, n_points=1000, plot_data=False):
         # Define the longitudinal range

@@ -23,8 +23,8 @@ test_wiggler = WigglerFieldFitter(file_path=file_path,
                                   dy=dz,
                                   ds=dz,
                                   peak_window=(99, 2100),
-                                  n_modes=[6, 6, 3],
-                                  poly_deg=[[4, 4], [4, 4], [4, 4]],
+                                  n_modes=6,
+                                  poly_pieces=[[15, 15], [15, 15], [10, 10]],
                                   deg=2
                                   )
 test_wiggler.set()
@@ -33,6 +33,7 @@ test_wiggler.set()
 #test_wiggler.plot_integrated_fields()
 
 test_wigglerfull = WigglerFull(test_wiggler)
+
 start_time = time.time()
 test_wigglerfull.set_segments()
 end_time = time.time()
@@ -56,7 +57,7 @@ end_time = time.time()
 print(f"Time to get the integrator: {end_time - start_time} seconds")
 
 particle_ref = xt.Particles(mass0=xt.ELECTRON_MASS_EV, q0=1, energy0=2.7e9)
-
+wiggler_line.particle_ref = particle_ref
 test_wigglerfull.correctors(particle_ref)
 
 start_time = time.time()
@@ -64,7 +65,7 @@ tw = wiggler_line.twiss(include_collective=True, betx=1, bety=1)
 end_time = time.time()
 print(f"Time to compute twiss:      {end_time - start_time} seconds")
 
+plt.plot(tw.x, tw.y)
 tw.plot('x y')
 tw.plot('betx bety', 'dx dy')
-#plt.plot(tw.x, tw.y)
 plt.show()
