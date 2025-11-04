@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from tkinter.messagebox import ABORT
+
 import numpy as np
 import pandas as pd
 import scipy as sc
@@ -806,29 +808,39 @@ class WigglerFull:
         self.wiggler_line = None
 
         self._set_generic_expr()
-        self.set_segments()
+        #self.set_segments()
 
     def _set_generic_expr(self):
         n_modes = self.field_fitter.n_modes
         s = sp.symbols("s")
         curv = 0
 
-        Ac_syms = sp.symbols(f"Ac0:{n_modes}")
-        As_syms = sp.symbols(f"As0:{n_modes}")
-        k_syms = sp.symbols(f"k0:{n_modes}")
+        Aa_syms = sp.symbols(f"Aa0:{n_modes}")
+        Ba_syms = sp.symbols(f"Ba0:{n_modes}")
+        ka_syms = sp.symbols(f"ka0:{n_modes}")
+        Ab_syms = sp.symbols(f"Ab0:{n_modes}")
+        Bb_syms = sp.symbols(f"Bb0:{n_modes}")
+        kb_syms = sp.symbols(f"kb0:{n_modes}")
+
 
         b_sine_expr = sp.Integer(0)
         a_sine_expr = sp.Integer(0)
-        for Ac, As, k in zip(Ac_syms, As_syms, k_syms):
-            b_sine_expr += Ac * sp.cos(k * s)
-            a_sine_expr += As * sp.sin(k * s)
+        for Ac, As, k in zip(Aa_syms, Ba_syms, ka_syms):
+            a_expr = Ac * sp.cos(k * s) + As * sp.sin(k * s)
+            a_sine_expr += a_expr
+        for Ac, As, k in zip(Ab_syms, Bb_syms, kb_syms):
+            b_expr = Ac * sp.cos(k * s) + As * sp.sin(k * s)
+            b_sine_expr += b_expr
 
-        # Also build generic polynomial expressions of degree 4 for a and b
         deg_poly = 4
         a_p_syms = sp.symbols(f"a_0:{deg_poly+1}")
         b_p_syms = sp.symbols(f"b_0:{deg_poly+1}")
-        a_poly_expr = sum(coef * s**i for i, coef in enumerate(a_p_syms))
-        b_poly_expr = sum(coef * s**i for i, coef in enumerate(b_p_syms))
+        a_poly_expr = sp.Integer(0)
+        b_poly_expr = sp.Integer(0)
+        for i, coef in enumerate(a_p_syms):
+            a_poly_expr += coef * s**i
+        for i, coef in enumerate(b_p_syms):
+            b_poly_expr += coef * s**i
 
         # Changed GeneralVectorPotential to accept expressions with free parameters such as Ac_i, As_i, k_i.
         # Pass the sympy expressions as strings (bpmeth/bp accepts string expressions)
@@ -842,116 +854,6 @@ class WigglerFull:
         generic_poly_bpmeth = bp.GeneralVectorPotential(hs=f"{curv}", a=(f"{a_poly_expr}",), b=(f"{b_poly_expr}",))
         self.generic_poly_B = generic_poly_bpmeth.get_Bfield(lambdify=False)
         self.generic_poly_A = generic_poly_bpmeth.get_A()
-
-    def _extract_poly_coeffs(self, expr, deg=4):
-        s = sp.symbols("s")
-        p = sp.Poly(expr, s)
-        return [float(p.coeff_monomial(s**i)) for i in range(deg + 1)]
-
-    def _extract_sine_params(self, expr, n_modes):
-        """
-        Returns lists Ac, As, k of length n_modes extracted from a sympy expression like
-        sum(Ac_i*cos(k_i*s) + As_i*sin(k_i*s)) + const.
-        If fewer than n_modes distinct k are found, remaining entries are zeros.
-        """
-        s = sp.symbols("s")
-        # collect by k value
-        mode_map = {}
-        # cos terms
-        for cos_atom in expr.atoms(sp.cos):
-            arg = cos_atom.args[0]
-            k = sp.simplify(arg / s)
-            coeff = float(sp.simplify(expr.coeff(cos_atom)))
-            mode_map.setdefault(k, {"Ac": 0.0, "As": 0.0})["Ac"] = coeff
-        # sin terms
-        for sin_atom in expr.atoms(sp.sin):
-            arg = sin_atom.args[0]
-            k = sp.simplify(arg / s)
-            coeff = float(sp.simplify(expr.coeff(sin_atom)))
-            mode_map.setdefault(k, {"Ac": 0.0, "As": 0.0})["As"] = coeff
-        # order modes by magnitude of k (stable)
-        ks = sorted(list(mode_map.keys()), key=lambda kk: float(abs(kk)) if kk != 0 else 0.0)
-        Ac = [0.0] * n_modes
-        As = [0.0] * n_modes
-        k_vals = [0.0] * n_modes
-        for i, k in enumerate(ks[:n_modes]):
-            Ac[i] = mode_map[k]["Ac"]
-            As[i] = mode_map[k]["As"]
-            k_vals[i] = float(k)
-        return Ac, As, k_vals
-
-    def _lambdify_segment_from_generic(self, seg, deg_poly=4, n_modes=None):
-        """Substitute numeric coefficients into prebuilt generic symbolic expressions."""
-
-        s = sp.symbols("s")
-        if n_modes is None:
-            n_modes = getattr(self.field_fitter, "n_modes", 6)
-
-        # Detect whether to use sine or poly generic
-        def has_trig(expr):
-            return any(isinstance(a, (sp.sin, sp.cos)) for a in expr.atoms(sp.Function))
-
-        a_expr = seg.a[0] if seg.a else sp.Integer(0)
-        b_expr = seg.b[0] if seg.b else sp.Integer(0)
-        use_sine = has_trig(a_expr) or has_trig(b_expr)
-
-        # Choose generic templates
-        if use_sine:
-            Bx_sym, By_sym, Bs_sym = self.generic_sine_B
-            Ax_sym, Ay_sym, As_sym = self.generic_sine_A
-        else:
-            Bx_sym, By_sym, Bs_sym = self.generic_poly_B
-            Ax_sym, Ay_sym, As_sym = self.generic_poly_A
-
-        # Collect substitution dictionary
-        subs = {}
-
-        # Polynomial coefficients
-        if not use_sine:
-            a_coeffs = self._extract_poly_coeffs(a_expr, deg=deg_poly)
-            b_coeffs = self._extract_poly_coeffs(b_expr, deg=deg_poly)
-            for i, val in enumerate(a_coeffs):
-                subs[sp.Symbol(f"a_{i}")] = val
-            for i, val in enumerate(b_coeffs):
-                subs[sp.Symbol(f"b_{i}")] = val
-
-        # Sine coefficients
-        if use_sine:
-            Ac_a, As_a, k_a = self._extract_sine_params(a_expr, n_modes)
-            Ac_b, As_b, k_b = self._extract_sine_params(b_expr, n_modes)
-            for i in range(n_modes):
-                subs[sp.Symbol(f"Ac{i}")] = float(Ac_a[i] or Ac_b[i])
-                subs[sp.Symbol(f"As{i}")] = float(As_a[i] or As_b[i])
-                subs[sp.Symbol(f"k{i}")] = float(k_a[i] or k_b[i] or 0.0)
-
-        # Longitudinal field
-        if isinstance(seg.bs, (int, float)):
-            subs[sp.Symbol("bs")] = float(seg.bs)
-        else:
-            try:
-                subs[sp.Symbol("bs")] = float(sp.N(seg.bs))
-            except Exception:
-                pass
-
-        # Substitute
-        Bx_num = Bx_sym.subs(subs, evaluate=False)
-        By_num = By_sym.subs(subs, evaluate=False)
-        Bs_num = Bs_sym.subs(subs, evaluate=False)
-        Ax_num = Ax_sym.subs(subs, evaluate=False)
-        Ay_num = Ay_sym.subs(subs, evaluate=False)
-        As_num = As_sym.subs(subs, evaluate=False)
-
-        # Lambdify to numpy functions
-        x_sym, y_sym, s_sym = sp.symbols("x y s")
-        seg.Bxfun = sp.lambdify((x_sym, y_sym, s_sym), Bx_num, "numpy")
-        seg.Byfun = sp.lambdify((x_sym, y_sym, s_sym), By_num, "numpy")
-        seg.Bsfun = sp.lambdify((x_sym, y_sym, s_sym), Bs_num, "numpy")
-        seg.Axfun = sp.lambdify((x_sym, y_sym, s_sym), Ax_num, "numpy")
-        seg.Ayfun = sp.lambdify((x_sym, y_sym, s_sym), Ay_num, "numpy")
-        seg.Asfun = sp.lambdify((x_sym, y_sym, s_sym), As_num, "numpy")
-
-        seg.Bxexpr, seg.Byexpr, seg.Bsexpr = Bx_num, By_num, Bs_num
-        seg.Axexpr, seg.Ayexpr, seg.Asexpr = Ax_num, Ay_num, As_num
 
     def set_segments(self):
         N = self.field_fitter.deg + 1  # number of derivatives per field

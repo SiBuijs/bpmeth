@@ -37,9 +37,13 @@ cos_amps, sin_amps, kzs = test_wiggler._pass_sine_coefficients()
 
 print()
 
-prrr
 test_wigglerfull = WigglerFull(test_wiggler)
 
+test_wigglerfull._set_generic_expr()
+
+print(test_wigglerfull.generic_sine_B)
+
+prrr
 start_time = time.time()
 test_wigglerfull.set_segments()
 end_time = time.time()
