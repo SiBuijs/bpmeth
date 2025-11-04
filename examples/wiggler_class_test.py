@@ -17,21 +17,27 @@ file_path = 'example_data/knot_map_test.txt'
 #file_path = 'example_data/UE36kn3_LH.dat'
 #file_path = 'example_data/UE36_LH_highres_2.dat'
 
-test_wiggler = WigglerFieldFitter(file_path=file_path,
-                                  xy_point=(0, 0),
-                                  dx=dz,
-                                  dy=dz,
-                                  ds=dz,
-                                  peak_window=(99, 2100),
-                                  n_modes=6,
-                                  poly_pieces=[[15, 15], [15, 15], [10, 10]],
-                                  deg=2
-                                  )
+test_wiggler = WigglerFieldFitter(
+                                    file_path,
+                                    xy_point=(0, 0),
+                                    dx=0.001,
+                                    dy=0.001,
+                                    ds=0.001,
+                                    peak_window=(100, 2100),
+                                    n_modes=6,
+                                    poly_pieces=[[20, 15], [15, 15], [15, 15]],
+                                    deg=2,
+                                    filter_params=None,
+                            )
+
 test_wiggler.set()
-
 #test_wiggler.plot_fields()
-#test_wiggler.plot_integrated_fields()
 
+cos_amps, sin_amps, kzs = test_wiggler._pass_sine_coefficients()
+
+print()
+
+prrr
 test_wigglerfull = WigglerFull(test_wiggler)
 
 start_time = time.time()

@@ -335,12 +335,8 @@ class WigglerFieldFitter:
 
                 popt, pcov = curve_fit(self._sinusoid, s_reg, field_reg, p0=p0)
 
-                if fun:
-                    self.fit_pars[der_order][field]["sines"] = popt
-                    self.fit_data[der_order][field][sin_slice] = self._sinusoid(s_reg, *popt)
-                else:
-                    self.der2_fit_pars[der_order][field]["sines"] = popt
-                    self.fit_der2[der_order][field][sin_slice] = self._sinusoid(s_reg, *popt)
+                self.fit_pars[der_order][field]["sines"] = popt
+                self.fit_data[der_order][field][sin_slice] = self._sinusoid(s_reg, *popt)
 
     ####################################################################################################################
     # PIECEWISE POLYNOMIAL FITTING
@@ -524,7 +520,7 @@ class WigglerFieldFitter:
     ####################################################################################################################
     # STRINGS FOR BPMETH
     ####################################################################################################################
-
+    # TODO: This whole section can go. We no longer need strings.
     def _num(self, x, p=12):
         return f"{float(x):.{p}g}"
 
@@ -607,6 +603,43 @@ class WigglerFieldFitter:
 
         return segments
 
+    def _pass_sine_coefficients(self):
+
+        cos_amps = {}
+        sin_amps = {}
+        k_modes  = {}
+
+        for field in ["Bx", "By", "Bs"]:
+            for der_order in range(self.deg+1):
+                params = self.fit_pars[der_order][field]["sines"]
+                cos_amps[field] = params[0::3]
+                sin_amps[field] = params[1::3]
+                k_modes[field]  = params[2::3]
+
+                if field == 'Bs' and not self.Bs_fit:
+                    cos_amps[field] = [0.0]
+                    sin_amps[field] = [0.0]
+                    k_modes[field]  = [0.0]
+
+        return cos_amps, sin_amps, k_modes
+
+    def _pass_poly_coefficients(self):
+        if self.Bs_fit:
+            fields = ["Bx", "By", "Bs"]
+        else:
+            fields = ["Bx", "By"]
+
+        poly_coeffs_L = {}
+        poly_coeffs_R = {}
+
+        for field in fields:
+            for der_order in range(self.deg+1):
+                pars = self.fit_pars[der_order][field]
+                poly_coeffs_L[field] = pars.get("edge_L", [])
+                poly_coeffs_R[field] = pars.get("edge_R", [])
+
+        return poly_coeffs_L, poly_coeffs_R
+
    ####################################################################################################################
    # PLOTTING
    ####################################################################################################################
@@ -614,7 +647,6 @@ class WigglerFieldFitter:
     @staticmethod
     def _integrate(data, ds):
         return sc.integrate.cumulative_trapezoid(data, initial=0) * ds
-
 
     def plot_integrated_fields(self):
         fig1, (ax1, ax2, ax3) = plt.subplots(3, figsize=(10, 4), constrained_layout=True)
@@ -656,7 +688,6 @@ class WigglerFieldFitter:
         ax3.grid()
 
         plt.show()
-
 
     # PUBLIC
     # Plot the data against the fit.
