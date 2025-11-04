@@ -38,7 +38,9 @@ start_time = time.time()
 test_wigglerfull.set_segments()
 end_time = time.time()
 print(f"Time to make the segments:  {end_time - start_time} seconds")
-
+test_wigglerfull.plot_fields()
+test_wigglerfull.plot_vector_potential()
+"""
 #test_wigglerfull.plot_fields()
 #test_wigglerfull.plot_vector_potential(x=0.001, y=0.001)
 
@@ -60,6 +62,13 @@ particle_ref = xt.Particles(mass0=xt.ELECTRON_MASS_EV, q0=1, energy0=2.7e9)
 wiggler_line.particle_ref = particle_ref
 test_wigglerfull.correctors(particle_ref)
 
+#Corrector strengths [T]:
+#  k0l_corr1 = -2.745802e-04, k0sl_corr1 = 7.976874e-04
+#  k0l_corr2 = 7.079133e-04, k0sl_corr2 = -1.137973e-03
+#  k0l_corr3 = 7.680491e-04, k0sl_corr3 = 5.204176e-04
+#  k0l_corr4 = -6.717367e-04, k0sl_corr4 = -3.003631e-04
+#Time to compute twiss:      0.6319551467895508 seconds
+
 start_time = time.time()
 tw = wiggler_line.twiss(include_collective=True, betx=1, bety=1)
 end_time = time.time()
@@ -69,3 +78,4 @@ plt.plot(tw.x, tw.y)
 tw.plot('x y')
 tw.plot('betx bety', 'dx dy')
 plt.show()
+"""

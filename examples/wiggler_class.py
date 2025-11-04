@@ -24,7 +24,7 @@ from scipy.signal import find_peaks
 from scipy.optimize import curve_fit
 from numpy.polynomial import Polynomial
 import matplotlib.pyplot as plt
-
+from line_profiler import profile
 
 # ================================ Main class ================================
 
@@ -559,7 +559,6 @@ class WigglerFieldFitter:
 
         # ---- Defensive: if Bs is not fitted or borders invalid ----
         if field == "Bs" and (not self.Bs_fit or i1 <= i0 or not pars):
-            import sympy as sp
             return [(s_min, s_max, sp.Float(0))]
         s = self.s_full
         sL, sR = s[:i0], s[i1:]
@@ -779,7 +778,6 @@ class WigglerFull:
         self.set_segments()
 
     def _set_generic_expr(self):
-        # build symbolic multi-mode (co)sine expressions according to max modes in fitter# build symbolic multi-mode (co)sine expressions according to max modes in fitter
         n_modes = self.field_fitter.n_modes
         s = sp.symbols("s")
         curv = 0
@@ -816,7 +814,6 @@ class WigglerFull:
 
     def _extract_poly_coeffs(self, expr, deg=4):
         s = sp.symbols("s")
-        expr = sp.simplify(expr)
         p = sp.Poly(expr, s)
         return [float(p.coeff_monomial(s**i)) for i in range(deg + 1)]
 
@@ -827,7 +824,6 @@ class WigglerFull:
         If fewer than n_modes distinct k are found, remaining entries are zeros.
         """
         s = sp.symbols("s")
-        expr = sp.simplify(expr)
         # collect by k value
         mode_map = {}
         # cos terms
@@ -1057,6 +1053,11 @@ class WigglerFull:
         opt.step(2)
         end_time = time.time()
         print(f"Wiggler correctors set in {end_time - start_time:.2f} seconds.")
+        print("Corrector strengths [T]:")
+        print(f"  k0l_corr1 = {self.env['k0l_corr1']:.6e}, k0sl_corr1 = {self.env['k0sl_corr1']:.6e}")
+        print(f"  k0l_corr2 = {self.env['k0l_corr2']:.6e}, k0sl_corr2 = {self.env['k0sl_corr2']:.6e}")
+        print(f"  k0l_corr3 = {self.env['k0l_corr3']:.6e}, k0sl_corr3 = {self.env['k0sl_corr3']:.6e}")
+        print(f"  k0l_corr4 = {self.env['k0l_corr4']:.6e}, k0sl_corr4 = {self.env['k0sl_corr4']:.6e}")
 
     def get_field(self, x, y, s, midpoint=False):
         """
