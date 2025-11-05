@@ -33,8 +33,6 @@ test_wiggler = WigglerFieldFitter(
 test_wiggler.set()
 #test_wiggler.plot_fields()
 
-cos_amps, sin_amps, kzs = test_wiggler._pass_sine_coefficients()
-
 print()
 
 test_wigglerfull = WigglerFull(test_wiggler)
@@ -42,6 +40,9 @@ test_wigglerfull = WigglerFull(test_wiggler)
 test_wigglerfull._set_generic_expr()
 
 print(test_wigglerfull.generic_sine_B)
+print(test_wigglerfull.generic_sine_A)
+print(test_wigglerfull.generic_poly_B)
+print(test_wigglerfull.generic_poly_A)
 
 prrr
 start_time = time.time()

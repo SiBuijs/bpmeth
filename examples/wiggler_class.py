@@ -605,46 +605,9 @@ class WigglerFieldFitter:
 
         return segments
 
-    def _pass_sine_coefficients(self):
-
-        cos_amps = {}
-        sin_amps = {}
-        k_modes  = {}
-
-        for field in ["Bx", "By", "Bs"]:
-            for der_order in range(self.deg+1):
-                params = self.fit_pars[der_order][field]["sines"]
-                cos_amps[field] = params[0::3]
-                sin_amps[field] = params[1::3]
-                k_modes[field]  = params[2::3]
-
-                if field == 'Bs' and not self.Bs_fit:
-                    cos_amps[field] = [0.0]
-                    sin_amps[field] = [0.0]
-                    k_modes[field]  = [0.0]
-
-        return cos_amps, sin_amps, k_modes
-
-    def _pass_poly_coefficients(self):
-        if self.Bs_fit:
-            fields = ["Bx", "By", "Bs"]
-        else:
-            fields = ["Bx", "By"]
-
-        poly_coeffs_L = {}
-        poly_coeffs_R = {}
-
-        for field in fields:
-            for der_order in range(self.deg+1):
-                pars = self.fit_pars[der_order][field]
-                poly_coeffs_L[field] = pars.get("edge_L", [])
-                poly_coeffs_R[field] = pars.get("edge_R", [])
-
-        return poly_coeffs_L, poly_coeffs_R
-
-   ####################################################################################################################
-   # PLOTTING
-   ####################################################################################################################
+    ####################################################################################################################
+    # PLOTTING
+    ####################################################################################################################
 
     @staticmethod
     def _integrate(data, ds):
@@ -763,6 +726,8 @@ class WigglerSegment:
         self.y0 = y0
         self.scale = 1.0
 
+        # TODO: These tuples might not be needed here.
+        # TODO: Will look into where they can be put instead.
         self.bs = bs
         self.a = tuple(a_list)
         self.b = tuple(b_list)
@@ -812,46 +777,62 @@ class WigglerFull:
 
     def _set_generic_expr(self):
         n_modes = self.field_fitter.n_modes
+        n_ders = self.field_fitter.deg
         s = sp.symbols("s")
         curv = 0
 
-        Aa_syms = sp.symbols(f"Aa0:{n_modes}")
-        Ba_syms = sp.symbols(f"Ba0:{n_modes}")
-        ka_syms = sp.symbols(f"ka0:{n_modes}")
-        Ab_syms = sp.symbols(f"Ab0:{n_modes}")
-        Bb_syms = sp.symbols(f"Bb0:{n_modes}")
-        kb_syms = sp.symbols(f"kb0:{n_modes}")
+        # Define symbols
+        Aa_syms = {(i, j): sp.Symbol(f"Aa{i}_{j}") for i in range(1, n_modes + 1) for j in range(1, n_ders + 2)}
+        Ba_syms = {(i, j): sp.Symbol(f"Ba{i}_{j}") for i in range(1, n_modes + 1) for j in range(1, n_ders + 2)}
+        ka_syms = {(i, j): sp.Symbol(f"ka{i}_{j}") for i in range(1, n_modes + 1) for j in range(1, n_ders + 2)}
 
+        Ab_syms = {(i, j): sp.Symbol(f"Ab{i}_{j}") for i in range(1, n_modes + 1) for j in range(1, n_ders + 2)}
+        Bb_syms = {(i, j): sp.Symbol(f"Bb{i}_{j}") for i in range(1, n_modes + 1) for j in range(1, n_ders + 2)}
+        kb_syms = {(i, j): sp.Symbol(f"kb{i}_{j}") for i in range(1, n_modes + 1) for j in range(1, n_ders + 2)}
 
-        b_sine_expr = sp.Integer(0)
-        a_sine_expr = sp.Integer(0)
-        for Ac, As, k in zip(Aa_syms, Ba_syms, ka_syms):
-            a_expr = Ac * sp.cos(k * s) + As * sp.sin(k * s)
-            a_sine_expr += a_expr
-        for Ac, As, k in zip(Ab_syms, Bb_syms, kb_syms):
-            b_expr = Ac * sp.cos(k * s) + As * sp.sin(k * s)
-            b_sine_expr += b_expr
+        a_sine_exprs = tuple(
+            sum(Aa_syms[i, j] * sp.cos(ka_syms[i, j] * s) + Ba_syms[i, j] * sp.sin(ka_syms[i, j] * s)
+                for i in range(1, n_modes + 1))
+            for j in range(1, n_ders + 2)
+        )
+
+        b_sine_exprs = tuple(
+            sum(
+                Ab_syms[i, j] * sp.cos(kb_syms[i, j] * s) + Bb_syms[i, j] * sp.sin(kb_syms[i, j] * s)
+                for i in range(1, n_modes + 1)
+            )
+            for j in range(1, n_ders + 2)
+        )
+
+        print("a_sine_expr:", a_sine_exprs)
+        print("b_sine_expr:", b_sine_exprs)
 
         deg_poly = 4
-        a_p_syms = sp.symbols(f"a_0:{deg_poly+1}")
-        b_p_syms = sp.symbols(f"b_0:{deg_poly+1}")
-        a_poly_expr = sp.Integer(0)
-        b_poly_expr = sp.Integer(0)
-        for i, coef in enumerate(a_p_syms):
-            a_poly_expr += coef * s**i
-        for i, coef in enumerate(b_p_syms):
-            b_poly_expr += coef * s**i
+        # create per-derivative polynomial coefficient symbols and expressions (degree 4 -> 5 terms)
+        a_p_syms = {j: sp.symbols(f"a_{j}_0:{deg_poly+1}") for j in range(1, n_ders + 2)}
+        b_p_syms = {j: sp.symbols(f"b_{j}_0:{deg_poly+1}") for j in range(1, n_ders + 2)}
+        a_poly_exprs = tuple(
+            sum(coef * s**i for i, coef in enumerate(a_p_syms[j]))
+            for j in range(1, n_ders + 2)
+        )
+        b_poly_exprs = tuple(
+            sum(coef * s**i for i, coef in enumerate(b_p_syms[j]))
+            for j in range(1, n_ders + 2)
+        )
+
+        print("a_poly_exprs:", a_poly_exprs)
+        print("b_poly_exprs:", b_poly_exprs)
 
         # Changed GeneralVectorPotential to accept expressions with free parameters such as Ac_i, As_i, k_i.
         # Pass the sympy expressions as strings (bpmeth/bp accepts string expressions)
         # self.generic_sine_A = (Ax, Ay, As)
         # self.generic_sine_B = (Bx, By, Bs)
         # Likewise for generic_poly_A and generic_poly_B
-        generic_sine_bpmeth = bp.GeneralVectorPotential(hs=f"{curv}", a=(f"{a_sine_expr}",), b=(f"{b_sine_expr}",))
+        generic_sine_bpmeth = bp.GeneralVectorPotential(hs=f"{curv}", a=a_sine_exprs, b=b_sine_exprs)
         self.generic_sine_B = generic_sine_bpmeth.get_Bfield(lambdify=False)
         self.generic_sine_A = generic_sine_bpmeth.get_A()
 
-        generic_poly_bpmeth = bp.GeneralVectorPotential(hs=f"{curv}", a=(f"{a_poly_expr}",), b=(f"{b_poly_expr}",))
+        generic_poly_bpmeth = bp.GeneralVectorPotential(hs=f"{curv}", a=a_poly_exprs, b=b_poly_exprs)
         self.generic_poly_B = generic_poly_bpmeth.get_Bfield(lambdify=False)
         self.generic_poly_A = generic_poly_bpmeth.get_A()
 
