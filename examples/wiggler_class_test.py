@@ -33,18 +33,13 @@ test_wiggler = WigglerFieldFitter(
 test_wiggler.set()
 #test_wiggler.plot_fields()
 
-print()
+#print(test_wiggler.fit_pars[0]['Bx']['edge_L'])
+#print(test_wiggler.fit_pars[0]['Bx']['sines'])
 
 test_wigglerfull = WigglerFull(test_wiggler)
-
-test_wigglerfull._set_generic_expr()
-
-print(test_wigglerfull.generic_sine_B)
-print(test_wigglerfull.generic_sine_A)
-print(test_wigglerfull.generic_poly_B)
-print(test_wigglerfull.generic_poly_A)
-
+test_wigglerfull.plot_fields()
 prrr
+
 start_time = time.time()
 test_wigglerfull.set_segments()
 end_time = time.time()
