@@ -1,5 +1,6 @@
 from wiggler_class import WigglerFieldFitter
 from wiggler_class import WigglerFull
+import sympy as sp
 import xtrack as xt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -25,7 +26,7 @@ test_wiggler = WigglerFieldFitter(
                                     ds=0.001,
                                     peak_window=(100, 2100),
                                     n_modes=6,
-                                    poly_pieces=[[20, 15], [15, 15], [15, 15]],
+                                    poly_pieces=[[15, 15], [15, 15], [15, 15]],
                                     deg=2,
                                     filter_params=None,
                             )
@@ -37,7 +38,12 @@ test_wiggler.set()
 #print(test_wiggler.fit_pars[0]['Bx']['sines'])
 
 test_wigglerfull = WigglerFull(test_wiggler)
-test_wigglerfull.plot_fields()
+
+#print(test_wigglerfull._extract_fit_params(1, 'Bx', 'edge_L')[0][sp.symbols('a2_0_p0')])
+#print(test_wiggler.fit_pars['edge_L'][1]['Bx'][0])
+
+test_wigglerfull.plot_field()
+
 prrr
 
 start_time = time.time()
