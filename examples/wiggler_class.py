@@ -438,6 +438,11 @@ class WigglerFieldFitter:
                 self.fit_data[der_order][field][:i0] = fitL
                 fitR, piecesR, bordersR = self._fit_poly_side(field, s_right, b_right, s_mid, nR, left_side=False,
                                                               der_order=der_order)
+
+                print(f"Fitted {field} derivative order {der_order} edges with {nL} left and {nR} right polynomial pieces.")
+                print(f"piecesL: {piecesL[1][1]}")
+                print(f"piecesR: {piecesR[1][1]}")
+
                 self.fit_data[der_order][field][i1:] = fitR
 
                 # after computing fitL/piecesL and fitR/piecesR:
@@ -622,6 +627,13 @@ class WigglerSegment:
         self.y0 = y0
         self.scale = 1.0
 
+        self.a_expr = None
+        self.b_expr = None
+        self.bs_expr= None
+        self.a_fun  = None
+        self.b_fun  = None
+        self.bs_fun = None
+
         self.Bxexpr = None
         self.Byexpr = None
         self.Bsexpr = None
@@ -658,7 +670,6 @@ class WigglerFull:
         self.wiggler_line = None
 
         self._set_generic_expr()
-        #self._lambdify_from_generic()
         self.set_segments()
 
     # PRIVATE
@@ -674,59 +685,44 @@ class WigglerFull:
         s = sp.symbols("s")
         curv = 0
 
-        # Define symbols (keyed as (mode, derivative))
-        Aa_syms = {(m, d): sp.Symbol(f"Aa{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-        Ba_syms = {(m, d): sp.Symbol(f"Ba{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-        ka_syms = {(m, d): sp.Symbol(f"ka{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+        # symbols (mode m = 1..n_modes, derivative d = 1..n_ders+1)
+        Aa = {(m, d): sp.Symbol(f"Aa{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+        Ba = {(m, d): sp.Symbol(f"Ba{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+        ka = {(m, d): sp.Symbol(f"ka{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
 
-        Ab_syms = {(m, d): sp.Symbol(f"Ab{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-        Bb_syms = {(m, d): sp.Symbol(f"Bb{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-        kb_syms = {(m, d): sp.Symbol(f"kb{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+        Ab = {(m, d): sp.Symbol(f"Ab{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+        Bb = {(m, d): sp.Symbol(f"Bb{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+        kb = {(m, d): sp.Symbol(f"kb{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
 
-        # DC symbols per derivative (constant offset)
-        # One DC term per derivative (instead of one per mode).
-        Aa_dc_syms = {d: sp.Symbol(f"Aa_dc_{d}") for d in range(1, n_ders + 2)}
-        Ab_dc_syms = {d: sp.Symbol(f"Ab_dc_{d}") for d in range(1, n_ders + 2)}
+        # DC per DERIVATIVE, not per mode
+        Aa_dc = {d: sp.Symbol(f"Aa_dc_{d}") for d in range(1, n_ders + 2)}
+        Ab_dc = {d: sp.Symbol(f"Ab_dc_{d}") for d in range(1, n_ders + 2)}
 
-        # Build per-mode sine expressions without repeating DC terms
-        a_mode_exprs = tuple(
-            sum(
-                Aa_syms[(m, d)] * sp.cos(ka_syms[(m, d)] * s)
-                + Ba_syms[(m, d)] * sp.sin(ka_syms[(m, d)] * s)
-                for d in range(1, n_ders + 2)
-            )
-            for m in range(1, n_modes + 1)
+        # --- build expressions PER DERIVATIVE ---
+        self.a_sine_exprs = tuple(
+            Aa_dc[d] + sum(Aa[(m, d)] * sp.cos(ka[(m, d)] * s) + Ba[(m, d)] * sp.sin(ka[(m, d)] * s)
+                           for m in range(1, n_modes + 1))
+            for d in range(1, n_ders + 2)
+        )
+        self.b_sine_exprs = tuple(
+            Ab_dc[d] + sum(Ab[(m, d)] * sp.cos(kb[(m, d)] * s) + Bb[(m, d)] * sp.sin(kb[(m, d)] * s)
+                           for m in range(1, n_modes + 1))
+            for d in range(1, n_ders + 2)
         )
 
-        b_mode_exprs = tuple(
-            sum(
-                Ab_syms[(m, d)] * sp.cos(kb_syms[(m, d)] * s)
-                + Bb_syms[(m, d)] * sp.sin(kb_syms[(m, d)] * s)
-                for d in range(1, n_ders + 2)
-            )
-            for m in range(1, n_modes + 1)
-        )
-
-        # Single DC offset per derivative: sum these once when composing the full field expression.
-        a_dc_sum = sum(Aa_dc_syms[d] for d in range(1, n_ders + 2))
-        b_dc_sum = sum(Ab_dc_syms[d] for d in range(1, n_ders + 2))
-
-        # Keep the original variable names for downstream compatibility:
-        # add the DC offset to each mode expression so the DC term appears in the composed field
-        a_sine_exprs = tuple(expr + a_dc_sum for expr in a_mode_exprs)
-        b_sine_exprs = tuple(expr + b_dc_sum for expr in b_mode_exprs)
-
+        # Bs the same way (when fitted)
         if self.field_fitter.Bs_fit:
-            As_syms = {(m, d): sp.Symbol(f"As{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-            Bs_syms = {(m, d): sp.Symbol(f"Bs{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-            ks_syms = {(m, d): sp.Symbol(f"ks{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-            As_dc_syms = {d: sp.Symbol(f"As_dc_{d}") for d in range(1, n_ders + 2)}
-            bs_sine_exprs = tuple(
-                As_syms[(m, 1)] * sp.cos(ks_syms[(m, 1)] * s) + Bs_syms[(m, 1)] * sp.sin(ks_syms[(m, 1)] * s) + As_dc_syms[m]
-                for m in range(1, n_modes + 1)
+            As = {(m, d): sp.Symbol(f"As{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+            Bs = {(m, d): sp.Symbol(f"Bs{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+            ks = {(m, d): sp.Symbol(f"ks{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+            As_dc = {d: sp.Symbol(f"As_dc_{d}") for d in range(1, n_ders + 2)}
+            self.bs_sine_exprs = tuple(
+                As_dc[d] + sum(As[(m, d)] * sp.cos(ks[(m, d)] * s) + Bs[(m, d)] * sp.sin(ks[(m, d)] * s)
+                               for m in range(1, n_modes + 1))
+                for d in range(1, n_ders + 2)
             )
         else:
-            bs_sine_exprs = 0
+            self.bs_sine_exprs = 0
 
         deg_poly = 4
         # create per-derivative polynomial coefficient symbols and expressions (degree 4 -> 5 terms)
@@ -743,8 +739,10 @@ class WigglerFull:
             a_poly_exprs_list.append(sum(coef * s**i for i, coef in enumerate(a_syms)))
             b_poly_exprs_list.append(sum(coef * s**i for i, coef in enumerate(b_syms)))
 
-        a_poly_exprs = tuple(a_poly_exprs_list)
-        b_poly_exprs = tuple(b_poly_exprs_list)
+        self.a_poly_exprs = tuple(a_poly_exprs_list)
+        self.b_poly_exprs = tuple(b_poly_exprs_list)
+        print(f"a_poly_exprs: {self.a_poly_exprs}")
+        print(f"b_poly_exprs: {self.b_poly_exprs}")
 
         if self.field_fitter.Bs_fit:
             # polynomial symbols/expressions for Bs (same logic as for Bx/By)
@@ -754,26 +752,26 @@ class WigglerFull:
                 c_syms = sp.symbols(f"c{j}_0:{deg_poly+1}")
                 bs_poly_syms[j] = c_syms
                 bs_poly_exprs_list.append(sum(coef * s**i for i, coef in enumerate(c_syms)))
-            bs_poly_exprs = tuple(bs_poly_exprs_list)
+            self.bs_poly_exprs = tuple(bs_poly_exprs_list)
         else:
-            bs_poly_exprs = 0
+            self.bs_poly_exprs = 0
 
         # Changed GeneralVectorPotential to accept expressions with free parameters such as Ac_i, As_i, k_i.
         # Pass the sympy expressions as strings (bpmeth/bp accepts string expressions)
         # self.generic_sine_A = (Ax, Ay, As)
         # self.generic_sine_B = (Bx, By, Bs)
         # Likewise for generic_poly_A and generic_poly_B
-        generic_sine_bpmeth = bp.GeneralVectorPotential(hs=f"{curv}", a=a_sine_exprs, b=b_sine_exprs, bs=bs_sine_exprs)
+        generic_sine_bpmeth = bp.GeneralVectorPotential(hs=f"{curv}", a=self.a_sine_exprs, b=self.b_sine_exprs, bs=self.bs_sine_exprs)
         self.generic_sine_B = generic_sine_bpmeth.get_Bfield(lambdify=False)
         self.generic_sine_A = generic_sine_bpmeth.get_A()
 
-        generic_poly_bpmeth = bp.GeneralVectorPotential(hs=f"{curv}", a=a_poly_exprs, b=b_poly_exprs, bs=bs_poly_exprs)
+        generic_poly_bpmeth = bp.GeneralVectorPotential(hs=f"{curv}", a=self.a_poly_exprs, b=self.b_poly_exprs, bs=self.bs_poly_exprs)
         self.generic_poly_B = generic_poly_bpmeth.get_Bfield(lambdify=False)
         self.generic_poly_A = generic_poly_bpmeth.get_A()
 
     def _extract_edge_fit_params(self, fit_type="edge_L"):
         pieces_all = self.field_fitter.fit_pars[fit_type]
-        print(f"Extracting {fit_type} fit parameters: {pieces_all}")
+        #print(f"Extracting {fit_type} fit parameters: {pieces_all}")
         base_map = {"Bx": "a", "By": "b", "Bs": "c"}
         combined_pieces = []  # store as list of dicts, index = piece index
 
@@ -803,6 +801,9 @@ class WigglerFull:
                     for power, val in enumerate(coef_arr):
                         name = f"{base}{d}_{power}"
                         combined_pieces[p_idx][sp.Symbol(name)] = float(val)
+
+            if fit_type == "edge_L":
+                combined_pieces.reverse()  # left edge pieces need to be reversed
 
         return combined_pieces
 
@@ -881,18 +882,26 @@ class WigglerFull:
                 segment = WigglerSegment(s0=s0, length=length)
 
                 # Substitute for this field only
-                if field == "Bx":
-                    exprs_B = self.generic_poly_B
-                    exprs_A = self.generic_poly_A
-                elif field == "By":
-                    exprs_B = self.generic_poly_B
-                    exprs_A = self.generic_poly_A
-                else:  # Bs
-                    exprs_B = self.generic_poly_B
-                    exprs_A = self.generic_poly_A
+                exprs_B = self.generic_poly_B
+                exprs_A = self.generic_poly_A
+                exprs_a = self.a_poly_exprs
+                exprs_b = self.b_poly_exprs
+                if field == "Bs" and self.field_fitter.Bs_fit:
+                    exprs_bs = self.bs_poly_exprs
+                    segment.bs_expr = [exprs_bs[i].subs(params) for i in range(len(exprs_bs))]
+                else:
+                    segment.bs_expr = [0]
 
                 segment.Bxexpr, segment.Byexpr, segment.Bsexpr = [expr.subs(params) for expr in exprs_B]
                 segment.Axexpr, segment.Ayexpr, segment.Asexpr = [expr.subs(params) for expr in exprs_A]
+                segment.a_expr = [exprs_a[i].subs(params) for i in range(len(exprs_a))]
+                segment.b_expr = [exprs_b[i].subs(params) for i in range(len(exprs_b))]
+
+                print(f"segment params: {params}")
+                print(f"segment.a_expr: {segment.a_expr}")
+                print(f"segment.b_expr: {segment.b_expr}")
+                print(f"segment.bs_expr: {segment.bs_expr}")
+
 
                 for comp in ["Bx", "By", "Bs", "Ax", "Ay", "As"]:
                     expr = getattr(segment, f"{comp}expr")
@@ -914,8 +923,22 @@ class WigglerFull:
 
                     exprs_B = self.generic_sine_B
                     exprs_A = self.generic_sine_A
+                    exprs_a = self.a_sine_exprs
+                    exprs_b = self.b_sine_exprs
+                    if field == "Bs" and self.field_fitter.Bs_fit:
+                        exprs_bs = self.bs_sine_exprs
+                        segment.bs_expr = [exprs_bs[i].subs(params) for i in range(len(exprs_bs))]
+                    else:
+                        segment.bs_expr = [0]
                     segment.Bxexpr, segment.Byexpr, segment.Bsexpr = [expr.subs(params) for expr in exprs_B]
                     segment.Axexpr, segment.Ayexpr, segment.Asexpr = [expr.subs(params) for expr in exprs_A]
+                    segment.a_expr = [exprs_a[i].subs(params) for i in range(len(exprs_a))]
+                    segment.b_expr = [exprs_b[i].subs(params) for i in range(len(exprs_b))]
+
+                    print(f"segment params: {params}")
+                    print(f"segment.a_expr: {segment.a_expr}")
+                    print(f"segment.b_expr: {segment.b_expr}")
+                    print(f"segment.bs_expr: {segment.bs_expr}")
 
                     for comp in ["Bx", "By", "Bs", "Ax", "Ay", "As"]:
                         expr = getattr(segment, f"{comp}expr")
@@ -937,8 +960,22 @@ class WigglerFull:
 
                 exprs_B = self.generic_poly_B
                 exprs_A = self.generic_poly_A
+                exprs_a = self.a_poly_exprs
+                exprs_b = self.b_poly_exprs
+                if field == "Bs" and self.field_fitter.Bs_fit:
+                    exprs_bs = self.bs_poly_exprs
+                    segment.bs_expr = [exprs_bs[i].subs(params) for i in range(len(exprs_bs))]
+                else:
+                    segment.bs_expr = [0]
                 segment.Bxexpr, segment.Byexpr, segment.Bsexpr = [expr.subs(params) for expr in exprs_B]
                 segment.Axexpr, segment.Ayexpr, segment.Asexpr = [expr.subs(params) for expr in exprs_A]
+                segment.a_expr = [exprs_a[i].subs(params) for i in range(len(exprs_a))]
+                segment.b_expr = [exprs_b[i].subs(params) for i in range(len(exprs_b))]
+
+                print(f"segment params: {params}")
+                print(f"segment.a_expr: {segment.a_expr}")
+                print(f"segment.b_expr: {segment.b_expr}")
+                print(f"segment.bs_expr: {segment.bs_expr}")
 
                 for comp in ["Bx", "By", "Bs", "Ax", "Ay", "As"]:
                     expr = getattr(segment, f"{comp}expr")

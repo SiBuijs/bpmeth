@@ -39,8 +39,6 @@ test_wiggler.set()
 
 test_wigglerfull = WigglerFull(test_wiggler)
 
-#print(test_wigglerfull._extract_fit_params(1, 'Bx', 'edge_L')[0][sp.symbols('a2_0_p0')])
-#print(test_wiggler.fit_pars['edge_L'][1]['Bx'][0])
 
 test_wigglerfull.plot_field()
 
