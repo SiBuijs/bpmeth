@@ -32,7 +32,7 @@ test_wiggler = WigglerFieldFitter(
                             )
 
 test_wiggler.set()
-#test_wiggler.plot_fields()
+test_wiggler.plot_fields()
 
 #print(test_wiggler.fit_pars[0]['Bx']['edge_L'])
 #print(test_wiggler.fit_pars[0]['Bx']['sines'])

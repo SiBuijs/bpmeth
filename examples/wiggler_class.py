@@ -778,7 +778,7 @@ class WigglerFull:
         for der_order, fields_dict in pieces_all.items():
             d = int(der_order) + 1  # e.g. 0 -> a1_, 1 -> a2_, ...
             for field, pieces in fields_dict.items():
-                base = base_map.get(field, "a")
+                base = base_map[field]
 
                 for p_idx, piece in enumerate(pieces):
                     # ensure the list is large enough
