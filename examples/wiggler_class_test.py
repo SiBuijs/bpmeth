@@ -26,7 +26,7 @@ test_wiggler = WigglerFieldFitter(
                                     ds=0.001,
                                     peak_window=(100, 2100),
                                     n_modes=6,
-                                    poly_pieces=[[15, 15], [15, 15], [15, 15]],
+                                    poly_pieces=[15, 15],
                                     deg=2,
                                     filter_params=None,
                             )

@@ -1,17 +1,4 @@
-# TODO: Keep splines + Sinusoids
-#       Wiggler generates data about the splines and sinusoids
-# TODO: Add class "WigglerSlice" (based on Gianni's MyWiggler) that can contain a single bpmeth instance.
-#       Receives a1, a2, a3, b1, b2, b3, bs and so on to generate one instance of bpmeth
-#       Contains the starting position of the element, and x y offsets
-# TODO: The entire wiggler should be stored in another object which can combine the results into one object
-#       Receives the bpmeth instances and stores them in one object
-#       Needs to be able to return the magnetic field for any s
-#       Builds a line with the slices
-# TODO: If I'm done with this before Tuesday, I'd like to get rid of the sinusoids altogether, just splines.
-
 from __future__ import annotations
-
-from tkinter.messagebox import ABORT
 
 import numpy as np
 import pandas as pd
@@ -21,10 +8,8 @@ import xtrack as xt
 
 import bpmeth as bp
 import time
-from bpmeth import poly_fit
 from scipy.signal import find_peaks
 from scipy.optimize import curve_fit
-from numpy.polynomial import Polynomial
 import matplotlib.pyplot as plt
 from line_profiler import profile
 
@@ -41,7 +26,7 @@ class WigglerFieldFitter:
             ds=0.001,
             peak_window=(100, 2100),
             n_modes=6,
-            poly_pieces=[[15, 15], [15, 15], [15, 15]],
+            poly_pieces=[15, 15],
             deg=0,
             filter_params=None,
     ):
@@ -56,11 +41,7 @@ class WigglerFieldFitter:
         # We can add a more general functionality later.
         self.filter_params = filter_params
 
-        self.shapes = {
-            "Bx": {"n_pieces_L": poly_pieces[0][0], "n_pieces_R": poly_pieces[0][1]},
-            "By": {"n_pieces_L": poly_pieces[1][0], "n_pieces_R": poly_pieces[1][1]},
-            "Bs": {"n_pieces_L": poly_pieces[2][0], "n_pieces_R": poly_pieces[2][1]},
-        }
+        self.n_pieces_L, self.n_pieces_R = poly_pieces
 
         self.df = None
         self.s_full = None
@@ -70,8 +51,8 @@ class WigglerFieldFitter:
         self.Bs_fit = None
 
         # Dictionary that holds a list of borders for each field
-        self.borders_idx  = {"Bx": None, "By": None, "Bs": None}
-        self.poly_borders = {"Bx": [], "By": [], "Bs": []}
+        self.borders_idx  = []
+        self.poly_borders = []
 
         # Data dictionaries
         # raw_data holds the data from the file
@@ -222,8 +203,8 @@ class WigglerFieldFitter:
         field_peaks = field_peaks[np.logical_and(field_peaks > w_left, field_peaks < w_right)]
         field_valleys = field_valleys[np.logical_and(field_valleys > w_left, field_valleys < w_right)]
         field_extrema = np.sort(np.concatenate((field_peaks, field_valleys)))
-        for f in fields:
-            self.borders_idx[f] = [field_extrema[4], field_extrema[-4]]
+
+        self.borders_idx = [field_extrema[4], field_extrema[-4]]
 
     # PRIVATE
     # This is an impromptu noise-filter.
@@ -304,7 +285,7 @@ class WigglerFieldFitter:
 
         for field in fields:
             for der_order in range(self.deg + 1):
-                sin_slice = slice(self.borders_idx[field][0], self.borders_idx[field][1])
+                sin_slice = slice(self.borders_idx[0], self.borders_idx[1])
                 s_reg = self.s_full[sin_slice]
 
                 if fun:
@@ -434,7 +415,7 @@ class WigglerFieldFitter:
         for field in fields:
             for der_order in range(self.deg+1):
                 # center region slice and grid
-                i0, i1 = self.borders_idx[field]
+                i0, i1 = self.borders_idx
                 s_mid = self.s_full[i0:i1]
 
                 # tails
@@ -444,8 +425,8 @@ class WigglerFieldFitter:
                 b_right = self.raw_data[der_order][field][i1:]
 
                 # degrees + number of chained pieces per side (configurable)
-                nL = int(self.shapes[field]["n_pieces_L"])
-                nR = int(self.shapes[field]["n_pieces_R"])
+                nL = self.n_pieces_L
+                nR = self.n_pieces_R
                 fitL, piecesL, bordersL = self._fit_poly_side(field, s_left, b_left, s_mid, nL, left_side=True,
                                                               der_order=der_order)
                 self.fit_data[der_order][field][:i0] = fitL
@@ -467,7 +448,7 @@ class WigglerFieldFitter:
                 self.fit_pars["edge_R"][der_order][field] = [p[1].coef for p in piecesR]  # order: near-center -> far-right
 
                 # existing border assembly (kept)
-                self.poly_borders[field] = bordersL[:-1] + [float(self.s_full[i0]), float(self.s_full[i1])] + bordersR[1:]
+                self.poly_borders = bordersL[:-1] + [float(self.s_full[i0]), float(self.s_full[i1])] + bordersR[1:]
 
         # If Bs was not fitted, create matching zero entries for Bs that mirror Bx/By shapes
         # Only create Bs entries for the 0th derivative (Bs has no higher derivatives).
@@ -577,7 +558,7 @@ class WigglerFieldFitter:
 
         # Add vertical lines at different positions for each subplot
         for field in ["Bx", "By", "Bs"]:
-            for idx in self.borders_idx[field]:
+            for idx in self.borders_idx:
                 ax = {"Bx": ax1, "By": ax2, "Bs": ax3}[field]
                 ax.axvline(x=self.s_full[idx], color='k', linestyle='--', linewidth=1)
 
@@ -612,7 +593,7 @@ class WigglerFieldFitter:
 
         # Add vertical lines at different positions for each subplot
         for field in ["Bx", "By", "Bs"]:
-            for idx in self.borders_idx[field]:
+            for idx in self.borders_idx:
                 ax = {"Bx": ax1, "By": ax2, "Bs": ax3}[field]
                 ax.axvline(x=self.s_full[idx], color='k', linestyle='--', linewidth=1)
 
@@ -911,13 +892,9 @@ class WigglerFull:
         fields = ["Bx", "By", "Bs"]
 
         # Use the first field as reference for shapes / poly_borders (parameters are global and substituted once per segment)
-        ref_field = fields[0]
-        shapes = self.field_fitter.shapes[ref_field]
-        poly_borders = self.field_fitter.poly_borders[ref_field]
-        nL = int(shapes["n_pieces_L"])
-        nR = int(shapes["n_pieces_R"])
-
-        print(f"\n=== Processing wiggler segments (reference field: {ref_field}) ===")
+        poly_borders = self.field_fitter.poly_borders
+        nL = self.field_fitter.n_pieces_L
+        nR = self.field_fitter.n_pieces_R
 
         # ===================== LEFT EDGE =====================
         left_pieces = self._extract_fit_params(fit_type="edge_L")

@@ -2,7 +2,5 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/bpmeth" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/examples/undulator" vcs="Git" />
   </component>
 </project>
