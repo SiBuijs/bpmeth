@@ -40,7 +40,7 @@ test_wiggler.plot_fields()
 test_wigglerfull = WigglerFull(test_wiggler)
 
 
-test_wigglerfull.plot_field()
+test_wigglerfull.plot_field(x0=0.001, y0=0.001, plot_data=True)
 
 prrr
 
