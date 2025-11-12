@@ -43,13 +43,6 @@ test_wigglerfull = WigglerFull(test_wiggler)
 test_wigglerfull.plot_field(x0=0.001, y0=0.001, plot_data=True)
 
 prrr
-
-start_time = time.time()
-test_wigglerfull.set_segments()
-end_time = time.time()
-print(f"Time to make the segments:  {end_time - start_time} seconds")
-test_wigglerfull.plot_fields()
-test_wigglerfull.plot_vector_potential()
 """
 #test_wigglerfull.plot_fields()
 #test_wigglerfull.plot_vector_potential(x=0.001, y=0.001)

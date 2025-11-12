@@ -1075,13 +1075,30 @@ class WigglerFull:
             s_start, s_end = s_ends
 
         s_vals = np.linspace(s_start, s_end, n_points)
+        # If plot_data is true, then it tries to extract the corresponding data from field_fitter.
+        # If that data is not available (because x0 and y0 are not in the dataframe index), then it skips plotting the data.
         if plot_data:
-            self.field_fitter.xy_point = (int(x0*1000), int(y0*1000))
-            self.field_fitter.select_xy()
-            s_full = self.field_fitter.s_full
-            Bx_data = self.field_fitter.raw_data[0]["Bx"]
-            By_data = self.field_fitter.raw_data[0]["By"]
-            Bs_data = self.field_fitter.raw_data[0]["Bs"]
+            x_int = int(x0 * 1000)
+            y_int = int(y0 * 1000)
+            import warnings
+            # verify (X,Y) exists in the dataframe index
+            try:
+                self.field_fitter.df.xs((x_int, y_int), level=["X", "Y"])
+            except KeyError:
+                xy_pairs = sorted(set(zip(self.field_fitter.df.index.get_level_values("X"),
+                                          self.field_fitter.df.index.get_level_values("Y"))))
+                warnings.warn(
+                    f"Requested (X,Y)=({x_int},{y_int}) not found in `self.field_fitter.df`. "
+                    f"Skipping data overlay. Available (X,Y) pairs (first 10 shown): {xy_pairs[:10]}"
+                )
+                plot_data = False
+            else:
+                self.field_fitter.xy_point = (x_int, y_int)
+                s_full = self.field_fitter.s_full
+                Bx_data = self.field_fitter.raw_data[0]["Bx"]
+                By_data = self.field_fitter.raw_data[0]["By"]
+                Bs_data = self.field_fitter.raw_data[0]["Bs"]
+
         Bx_vals, By_vals, Bs_vals = self.get_field(x0, y0, s_vals)
 
         plt.figure(figsize=(10, 6))
