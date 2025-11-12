@@ -32,8 +32,12 @@ test_wiggler = WigglerFieldFitter(
                             )
 
 test_wiggler.set()
-test_wiggler.plot_fields()
-
+test_wiggler._set_derivative_df()
+test_wiggler._set_df_fit_pars()
+print(test_wiggler.df_on_axis_raw.head())
+print(test_wiggler.df_fit_pars.head())
+#test_wiggler.plot_fields()
+prrrr
 #print(test_wiggler.fit_pars[0]['Bx']['edge_L'])
 #print(test_wiggler.fit_pars[0]['Bx']['sines'])
 
