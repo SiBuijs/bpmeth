@@ -36,12 +36,23 @@ class WigglerFieldFitter:
         self.dx, self.dy, self.ds = dx, dy, ds
         self.peak_window = peak_window
         self.n_modes = n_modes
+        self.n_pieces_L, self.n_pieces_R = poly_pieces
+
+        # List that holds a list of borders for each field
+        self.borders_idx  = []
+        self.poly_borders = []
+
+        # Empty symbolic dicts for the fit parameters.
+        self.am_polys = {}      # Corresponds to d^m Bx / dx^m of the polynomials
+        self.bm_polys = {}      # Corresponds to d^m By / dx^m of the polynomials
+        self.bs_polys = {}      # Corresponds to Bs of the polynomials
+        self.am_sines = {}      # Corresponds to d^m Bx / dx^m of the sinusoids
+        self.bm_sines = {}      # Corresponds to d^m By / dx^m of the sinusoids
+        self.bs_sines = {}      # Corresponds to Bs of the sinusoids
 
         # NOTE: Filter noise is now only used for the right tails, because those are noisy.
         # We can add a more general functionality later.
         self.filter_params = filter_params
-
-        self.n_pieces_L, self.n_pieces_R = poly_pieces
 
         self.df_raw_data = None
         self.df_on_axis_raw  = None
@@ -51,11 +62,7 @@ class WigglerFieldFitter:
         self.length = None
         self.deg = deg
         self.Bs_tol = 1e-3
-        self.Bs_fit = None
-
-        # Dictionary that holds a list of borders for each field
-        self.borders_idx  = []
-        self.poly_borders = []
+        self.Bs_fit = True
 
     # PUBLIC
     # Setter method that calls all the other methods to arrive at a fit.
@@ -69,7 +76,39 @@ class WigglerFieldFitter:
         self._fit_sinusoids()
         self._fit_edges()
 
+    # Naslagwerkje:
+    """
+    Use
+    pandas
+    indexing.Examples
+    for `self.df_fit_pars`:
+    
+    # Inspect structure first
+    print(self.df_fit_pars.columns)
+    print(self.df_fit_pars.index)
+    
+    # Single column by label
+    col = self.df_fit_pars['column_name']  # simple columns
+    # or
+    col = self.df_fit_pars.loc[:, 'column_name']
+    
+    # MultiIndex column (use a tuple)
+    col = self.df_fit_pars[('edge_L', 0, 'Bx')]
+    # or with .loc
+    col = self.df_fit_pars.loc[:, ('edge_L', 0, 'Bx')]
+    
+    # Slice with pd.IndexSlice for MultiIndex
+    import pandas as pd
+    idx = pd.IndexSlice
+    sub = self.df_fit_pars.loc[:, idx['edge_L', 0, :]]  # all fields at derivative 0 for edge_L
 
+    # Single row or single scalar
+    row = self.df_fit_pars.loc[row_label]
+    value = self.df_fit_pars.at[row_label, ('edge_L', 0, 'Bx')]
+    # by integer position
+    col_by_pos = self.df_fit_pars.iloc[:, 2]
+    val_by_pos = self.df_fit_pars.iat[3, 2]
+    """
 
     ####################################################################################################################
     # EVALUATION FUNCTIONS
@@ -131,7 +170,6 @@ class WigglerFieldFitter:
     # 3. Compute the function value and derivative at the "data side" (numerically), gives c_1 and c_2 (left side) or c_3 and c_4 (right side).
     # 4. Compute the integral over the interval (numerically), gives c_5.
     # 5. This immediately gives the polynomial coefficients for that slice.
-
     ####################################################################################################################
     # IDENTIFYING REGIONS AND SETTING BORDERS IN DATA CLASSES
     ####################################################################################################################
@@ -154,12 +192,146 @@ class WigglerFieldFitter:
             else:
                 fields = ["Bx", "By"]
             for field in fields:
+                # Loop through left edge.
                 for i in range(1, self.n_pieces_L + 1):
-                    results.loc[len(results)] = [field, der_order, f'L_poly_{i}', 'polynomial', {}]
-                results.loc[len(results)] = [field, der_order, 'center_sine', 'sinusoid', {}]
+                    if field == "Bx":
+                        par_dict = self.am_polys.copy()
+                    elif field == "By":
+                        par_dict = self.bm_polys.copy()
+                    else:  # Bs
+                        par_dict = self.bs_polys.copy()
+                    results.loc[len(results)] = [field, der_order, f'L_poly_{i}', 'polynomial', par_dict]
+
+                # Sinusoidal center region.
+                if field == "Bx":
+                    par_dict = self.am_sines.copy()
+                elif field == "By":
+                    par_dict = self.bm_sines.copy()
+                else:  # Bs
+                    par_dict = self.bs_sines.copy()
+                results.loc[len(results)] = [field, der_order, 'center_sine', 'sinusoid', par_dict]
+
+                # Loop through right edge.
                 for i in range(1, self.n_pieces_R + 1):
-                    results.loc[len(results)] = [field, der_order, f'R_poly_{i}', 'polynomial', {}]
+                    if field == "Bx":
+                        par_dict = self.am_polys.copy()
+                    elif field == "By":
+                        par_dict = self.bm_polys.copy()
+                    else:  # Bs
+                        par_dict = self.bs_polys.copy()
+                    results.loc[len(results)] = [field, der_order, f'R_poly_{i}', 'polynomial', par_dict]
         self.df_fit_pars = results
+
+    # PRIVATE
+    # This method generates symbolic variables for the sinusoidal fit parameters.
+    # The keys are:
+    # Aa{m}_{d} : Amplitude of cosine term for mode m, derivative order d of Bx
+    # Ba{m}_{d} : Amplitude of sine term for mode m, derivative order d of Bx
+    # ka{m}_{d} : Wave number for mode m, derivative order d of Bx
+    # Ab{m}_{d} : Amplitude of cosine term for mode m, derivative order d of By
+    # Bb{m}_{d} : Amplitude of sine term for mode m, derivative order d of By
+    # kb{m}_{d} : Wave number for mode m, derivative order d of By
+    # As{m}     : Amplitude of cosine term for mode m of Bs
+    # Bs{m}     : Amplitude of sine term for mode m of Bs
+    # ks{m}     : Wave number for mode m of Bs
+    # The DC terms are:
+    # Aa_dc_{d} : DC term for derivative order d of Bx
+    # Ab_dc_{d} : DC term for derivative order d of By
+    # As_dc     : DC term for Bs
+    def _generate_sine_symb_dict(self):
+        n_modes = self.n_modes
+        n_ders = self.deg
+
+        Aa = {sp.Symbol(f"Aa{m}_{d}"): None for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+        Ba = {sp.Symbol(f"Ba{m}_{d}"): None for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+        ka = {sp.Symbol(f"ka{m}_{d}"): None for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+        Aa_dc = {sp.Symbol(f"Aa_dc_{d}"): None for d in range(1, n_ders + 2)}
+        self.am_sines = {**Aa, **Ba, **ka, **Aa_dc}
+
+        Ab = {sp.Symbol(f"Ab{m}_{d}"): None for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+        Bb = {sp.Symbol(f"Bb{m}_{d}"): None for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+        kb = {sp.Symbol(f"kb{m}_{d}"): None for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
+        Ab_dc = {sp.Symbol(f"Ab_dc_{d}"): None for d in range(1, n_ders + 2)}
+        self.bm_sines = {**Ab, **Bb, **kb, **Ab_dc}
+
+        # Logic: If Bs is 10^-3 times smaller than max(Bx) or max(By), we do not fit it.
+        # In that case, we immediately set all bs coefficients to zero.
+        # Otherwise, the coefficients are left as None and assigned to numerical values later.
+        # use the on-axis subset extracted from self.df_raw_data above
+        bx_vals = self.df_on_axis_raw["Bx_0"].abs().dropna()
+        by_vals = self.df_on_axis_raw["By_0"].abs().dropna()
+        bs_vals = self.df_on_axis_raw["Bs_0"].abs().dropna()
+
+        if len(bs_vals) and len(bx_vals) and len(by_vals):
+            bs_max = bs_vals.max()
+            denom = min(bx_vals.max(), by_vals.max())
+            if denom > 0 and (bs_max / denom) < self.Bs_tol:
+                self.Bs_fit = False
+
+        print(f"self.Bs_fit = {self.Bs_fit}")
+
+        if self.Bs_fit:
+            dict_entry = None
+        else:
+            dict_entry = 0.0
+
+        As    = {sp.Symbol(f"As{m}"): dict_entry for m in range(1, n_modes + 1)}
+        Bs    = {sp.Symbol(f"Bs{m}"): dict_entry for m in range(1, n_modes + 1)}
+        ks    = {sp.Symbol(f"ks{m}"): dict_entry for m in range(1, n_modes + 1)}
+        As_dc = {sp.Symbol("As_dc") : dict_entry}
+
+        self.bs_sines = {**As, **Bs, **ks, **As_dc}
+
+
+    # PRIVATE
+    # This method generates symbolic variables for the polynomial fit parameters.
+    # The keys are:
+    # a{d}_{p} : Coefficient of s^p for derivative order d of Bx
+    # b{d}_{p} : Coefficient of s^p for derivative order d of By
+    # bs_{p}   : Coefficient of s^p for Bs
+    # The degree of the polynomials is fixed at 4 (5 coefficients), because of the basis that we choose.
+    def _generate_poly_symb_dict(self):
+        n_ders = self.deg
+        deg_poly = 4  # degree 4 -> coefficients 0..4
+
+        # create symbols a{der}_{power} and b{der}_{power} for each derivative (der = 1..n_ders+1)
+        self.am_polys = {
+            sp.Symbol(f"a{d}_{p}"): None
+            for d in range(1, n_ders + 2)
+            for p in range(deg_poly + 1)
+        }
+        self.bm_polys = {
+            sp.Symbol(f"b{d}_{p}"): None
+            for d in range(1, n_ders + 2)
+            for p in range(deg_poly + 1)
+        }
+
+        # Logic: If Bs is 10^-3 times smaller than max(Bx) or max(By), we do not fit it.
+        # In that case, we immediately set all bs coefficients to zero.
+        # Otherwise, the coefficients are left as None and assigned to numerical values later.
+        try:
+            # use the on-axis subset extracted from self.df_raw_data above
+            bx_vals = self.df_on_axis_raw["Bx_0"].abs().dropna()
+            by_vals = self.df_on_axis_raw["By_0"].abs().dropna()
+            bs_vals = self.df_on_axis_raw["Bs_0"].abs().dropna()
+
+            if len(bs_vals) and len(bx_vals) and len(by_vals):
+                bs_max = bs_vals.max()
+                denom = min(bx_vals.max(), by_vals.max())
+                if denom > 0 and (bs_max / denom) < self.Bs_tol:
+                    self.Bs_fit = False
+
+        except Exception:
+            # On any unexpected issue, leave Bs fitting enabled (fail-safe)
+            self.Bs_fit = True
+
+        if self.Bs_fit:
+            dict_entry = None
+        else:
+            dict_entry = 0.0
+
+        # bs coefficients are not per-derivative here (names: bs_0 .. bs_4)
+        self.bs_polys = {sp.Symbol(f"bs_{p}"): dict_entry for p in range(deg_poly + 1)}
 
     def _set_derivative_df(self):
         # Build a DataFrame of on-axis data with columns labeled per derivative order:
@@ -168,54 +340,31 @@ class WigglerFieldFitter:
         # 0th derivative columns
         subset.rename(columns={'Bx': 'Bx_0', 'By': 'By_0', 'Bs': 'Bs_0'}, inplace=True)
 
+        self.df_on_axis_raw = subset
+
         # compute transverse derivatives for der > 0 and add as columns (skip Bs derivatives)
         for der in range(1, self.deg + 1):
-            derivs = self._fit_transverse_polynomials(degree=self.deg, der=der)
+            derivs = self._fit_transverse_polynomials(der=der)
             subset[f'Bx_{der}'] = derivs['Bx']
             subset[f'By_{der}'] = derivs['By']
             # intentionally do not compute/store Bs_{der}
 
-        self.df_on_axis_raw = subset
+        # use the on-axis subset extracted from self.df_raw_data above
+        bs_vals = subset["Bs_0"].abs().dropna()
+        bx_vals = subset["Bx_0"].abs().dropna()
+        by_vals = subset["By_0"].abs().dropna()
 
-        # Logic: If Bs is 10^-3 times smaller than max(Bx) or max(By), we do not fit it.
-        # The check is only for the 0th derivative.
-        if (self.raw_data[0]["Bs"] is not None and max(self.raw_data[0]["Bs"]) / min(max(self.raw_data[0]["Bx"]), max(
-                self.raw_data[der_order]["By"])) < self.Bs_tol):
-            self.Bs_fit = False
-            for der_order in range(self.deg + 1):
-                self.fit_pars["sines"][der_order]["Bs"] = [0.0]
-                self.fit_pars["edge_L"][der_order]["Bs"] = [0.0]
-                self.fit_pars["edge_R"][der_order]["Bs"] = [0.0]
+        if len(bs_vals) and len(bx_vals) and len(by_vals):
+            bs_max = bs_vals.max()
+            denom = min(bx_vals.max(), by_vals.max())
+            if denom > 0 and (bs_max / denom) < self.Bs_tol:
+                self.Bs_fit = False
+                # Make all elements of bs_polys and bs_sines zero
+                for key in list(self.bs_polys.keys()):
+                    self.bs_polys[key] = 0.0
 
-
-    # PUBLIC
-    # This method selects the data at the specified (x,y) point and stores it in the fields dictionary.
-    # It is made public so that the user can change the (x,y) point and re-select the data without re-parsing the file.
-    def select_xy(self):
-        subset = self.df_raw_data.xs(self.xy_point, level=["X", "Y"]).sort_index()
-
-        self.s_full = subset.index.to_numpy() * self.ds
-        self.length = self.s_full[-1] - self.s_full[0]
-
-        # Store the raw data for each field.
-
-        for field in ["Bx", "By", "Bs"]:
-            for der_order in range(self.deg+1):
-                if der_order == 0:
-                    self.raw_data[der_order][field] = subset[field].to_numpy()
-                    self.fit_data[der_order][field] = np.zeros_like(self.raw_data[der_order][field])
-                else:
-                    self._fit_transverse_polynomials(degree=self.deg, der=der_order)
-                    self.fit_data[der_order][field] = np.zeros_like(self.raw_data[der_order][field])
-
-        # Logic: If Bs is 10^-3 times smaller than max(Bx) or max(By), we do not fit it.
-        # The check is only for the 0th derivative.
-        if (self.raw_data[0]["Bs"] is not None and max(self.raw_data[0]["Bs"]) / min(max(self.raw_data[0]["Bx"]), max(self.raw_data[der_order]["By"])) < self.Bs_tol):
-            self.Bs_fit = False
-            for der_order in range(self.deg+1):
-                self.fit_pars["sines"][der_order]["Bs"] = [0.0]
-                self.fit_pars["edge_L"][der_order]["Bs"] = [0.0]
-                self.fit_pars["edge_R"][der_order]["Bs"] = [0.0]
+                for key in list(self.bs_sines.keys()):
+                    self.bs_sines[key] = 0.0
 
     # PRIVATE
     # This method first finds the peaks and valleys in the data for Bx and By
@@ -226,7 +375,6 @@ class WigglerFieldFitter:
         w_right = self.peak_window[1]
 
         field = "Bx"
-        fields = ["Bx", "By", "Bs"]
 
         field_peaks = find_peaks(self.raw_data[0][field])[0]
         field_valleys = find_peaks(-self.raw_data[0][field])[0]
@@ -515,7 +663,7 @@ class WigglerFieldFitter:
     # This is done because bpmeth needs the derivatives w.r.t. x at each point.
     # The first derivatives are zero, but can be extracted nevertheless.
 
-    def _fit_transverse_polynomials(self, points=[-1, 0, 1], degree=2, der=0):
+    def _fit_transverse_polynomials(self, der=0):
         """
         Fits transverse polynomials of arbitrary degree through specified points and returns the der-th derivative at x=0.
 
@@ -534,29 +682,32 @@ class WigglerFieldFitter:
             Dictionary with keys "Bx", "By", "Bs" and values as arrays of the der-th derivative at x=0.
         """
 
-        subsets = {px: self.df_raw_data.xs((px, 0), level=["X", "Y"]).sort_index() for px in points}
-        polys = {"Bx": None, "By": None, "Bs": None}
-        derivs = {"Bx": None, "By": None, "Bs": None}
+        idx = self.df_raw_data.index
+        ys = idx.get_level_values("Y")
+        xs = idx.get_level_values("X")
+        mask = ys == 0
+        points = sorted(set(xs[mask]))
 
-        for field in ["Bx", "By", "Bs"]:
+        subsets = {px: self.df_raw_data.xs((px, 0), level=["X", "Y"]).sort_index() for px in points}
+        derivs = {"Bx": None, "By": None}
+
+        for field in ["Bx", "By"]:
             x = [p * self.dx for p in points]
             n = len(subsets[points[0]][field])
-            polys[field] = np.zeros((n, degree + 1))
             derivs[field] = np.zeros(n)
 
             for i in range(n):
                 y = [subsets[px][field].to_numpy()[i] for px in points]
-                coeffs = np.polyfit(x, y, degree)
-                polys[field][i, :] = coeffs
+                coeffs = np.polyfit(x, y, self.deg)
                 # Compute the der-th derivative at x=0
                 d_coeffs = np.polyder(coeffs, m=der)
                 # Evaluate at x=0
                 derivs[field][i] = np.polyval(d_coeffs, 0)
-
             # Optionally store the result for later use
-            self.raw_data[der][field] = derivs[field]
+            col_name = f"{field}_{der}"
+            # Ensure df_on_axis_raw exists and assign the derivative column
+            self.df_on_axis_raw[col_name] = derivs[field]
 
-        self._fitted_polynomials = polys
         return derivs
 
     ####################################################################################################################

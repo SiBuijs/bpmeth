@@ -31,10 +31,20 @@ test_wiggler = WigglerFieldFitter(
                                     filter_params=None,
                             )
 
-test_wiggler.set()
+#test_wiggler.set()
+test_wiggler._parse_to_dataframe()
 test_wiggler._set_derivative_df()
+test_wiggler._generate_sine_symb_dict()
+test_wiggler._generate_poly_symb_dict()
 test_wiggler._set_df_fit_pars()
-print(test_wiggler.df_on_axis_raw.head())
+
+mask = test_wiggler.df_fit_pars['field_component'] == 'Bx_0'
+rows_bs = test_wiggler.df_fit_pars[mask]
+print(rows_bs)
+
+#print(sub)
+
+#print(test_wiggler.df_on_axis_raw.head())
 print(test_wiggler.df_fit_pars.head())
 #test_wiggler.plot_fields()
 prrrr
