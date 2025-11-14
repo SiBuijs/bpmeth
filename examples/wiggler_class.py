@@ -222,6 +222,68 @@ class WigglerFieldFitter:
                     results.loc[len(results)] = [field, der_order, f'R_poly_{i}', 'polynomial', par_dict]
         self.df_fit_pars = results
 
+    """
+    # ALTERNATIVE IMPLEMENTATION OF _set_df_fit_pars USING MULTIINDEX DATAFRAME AND NESTED DICT
+    def _set_df_fit_pars(self):
+        # Build both a human-friendly DataFrame and a nested dict `self.fit_pars`.
+        rows = []
+        index = []
+        fit_pars = {"edge_L": {}, "sines": {}, "edge_R": {}}
+
+        for der_order in range(self.deg + 1):
+            # Exclude longitudinal field derivatives: Bs appears only for derivative 0
+            if der_order == 0:
+                fields = ["Bx", "By", "Bs"]
+            else:
+                fields = ["Bx", "By"]
+
+            key = str(der_order)
+            fit_pars["edge_L"].setdefault(key, {})
+            fit_pars["sines"].setdefault(key, {})
+            fit_pars["edge_R"].setdefault(key, {})
+
+            for field in fields:
+                # choose correct parameter prototypes depending on field
+                if field == "Bx":
+                    poly_proto = self.am_polys.copy()
+                    sine_proto = self.am_sines.copy()
+                elif field == "By":
+                    poly_proto = self.bm_polys.copy()
+                    sine_proto = self.bm_sines.copy()
+                else:  # Bs
+                    poly_proto = self.bs_polys.copy()
+                    sine_proto = self.bs_sines.copy()
+
+                # left edge pieces
+                left_list = []
+                for i in range(1, self.n_pieces_L + 1):
+                    left_list.append(poly_proto.copy())
+                    index.append((field, der_order, f"L_poly_{i}"))
+                    rows.append(poly_proto.copy())
+
+                # center sinusoid region
+                fit_pars["sines"][key][field] = sine_proto.copy()
+                index.append((field, der_order, "center_sine"))
+                rows.append(sine_proto.copy())
+
+                # right edge pieces
+                right_list = []
+                for i in range(1, self.n_pieces_R + 1):
+                    right_list.append(poly_proto.copy())
+                    index.append((field, der_order, f"R_poly_{i}"))
+                    rows.append(poly_proto.copy())
+
+                fit_pars["edge_L"][key][field] = left_list
+                fit_pars["edge_R"][key][field] = right_list
+
+        # MultiIndex DataFrame: index = (field, derivative_x, region), column 'params'
+        idx = pd.MultiIndex.from_tuples(index, names=["field_component", "derivative_x", "region"])
+        self.df_fit_pars = pd.DataFrame({"params": rows}, index=idx)
+
+        # Nested dict for programmatic access (kept in string keys to match existing usage patterns)
+        self.fit_pars = fit_pars
+    """
+
     # PRIVATE
     # This method generates symbolic variables for the sinusoidal fit parameters.
     # The keys are:
@@ -333,6 +395,9 @@ class WigglerFieldFitter:
         # bs coefficients are not per-derivative here (names: bs_0 .. bs_4)
         self.bs_polys = {sp.Symbol(f"bs_{p}"): dict_entry for p in range(deg_poly + 1)}
 
+    # PRIVATE
+    # This method extracts on-axis data from the raw DataFrame and computes transverse derivatives.
+    # This data is stored in self.df_on_axis_raw.
     def _set_derivative_df(self):
         # Build a DataFrame of on-axis data with columns labeled per derivative order:
         # e.g. Bx_0, By_0, Bs_0, Bx_1, By_1, ...
@@ -376,8 +441,11 @@ class WigglerFieldFitter:
 
         field = "Bx"
 
-        field_peaks = find_peaks(self.raw_data[0][field])[0]
-        field_valleys = find_peaks(-self.raw_data[0][field])[0]
+        # Use df_raw_data column values (fall back to .loc if necessary) as 1D array for peak finding
+        series = self.df_raw_data[field].values
+
+        field_peaks = find_peaks(series)[0]
+        field_valleys = find_peaks(-series)[0]
         field_peaks = field_peaks[np.logical_and(field_peaks > w_left, field_peaks < w_right)]
         field_valleys = field_valleys[np.logical_and(field_valleys > w_left, field_valleys < w_right)]
         field_extrema = np.sort(np.concatenate((field_peaks, field_valleys)))
@@ -388,6 +456,7 @@ class WigglerFieldFitter:
     # This is an impromptu noise-filter.
     # Will probably need to be improved later.
     # For now, it only filters noise from the right tail of the data, because that's where the noise is present.
+    """
     def _filter_noise(self):
         from scipy.signal import savgol_filter
         from scipy.signal import medfilt
@@ -417,7 +486,7 @@ class WigglerFieldFitter:
             m = medfilt(self.raw_data[field][tail].copy(), kernel_size=kernel_size)  # kernel_size must be odd
             y_sm = savgol_filter(m, window_length=window_length, polyorder=polyorder)
             self.raw_data[field][tail] = y_sm
-
+    """
 
     ####################################################################################################################
     # SINUSOID FITTING
@@ -456,35 +525,77 @@ class WigglerFieldFitter:
     # The fitted data is stored in the fit_data attribute.
     # It uses the _find_modes function to get initial guesses for the parameters.
     def _fit_sinusoids(self, fun=True):
-        if self.Bs_fit:
-            fields = ["Bx", "By", "Bs"]
-        else:
-            fields = ["Bx", "By"]
+        cols = []
+        for der in range(0, self.deg + 1):
+            cols.append(f"Bx_{der}")
+            cols.append(f"By_{der}")
+            if der == 0 and self.Bs_fit:
+                cols.append("Bs_0")
 
-        for field in fields:
-            for der_order in range(self.deg + 1):
-                sin_slice = slice(self.borders_idx[0], self.borders_idx[1])
-                s_reg = self.s_full[sin_slice]
+        for col in cols:
+            sin_slice = slice(self.borders_idx[0], self.borders_idx[1])
+            s_reg = self.s_full[sin_slice]
 
-                if fun:
-                    field_reg = self.raw_data[der_order][field][sin_slice]
-                else:
-                    field_reg = self.trans_der2[field][sin_slice]
+            # parse field and derivative from column name like "Bx_0"
+            field, der_order = col.split('_')
+            der_order = int(der_order)
 
-                cos_amps, sin_amps, k_modes = self._find_modes(s_reg, field_reg, self.ds, self.n_modes)
+            # get the data values for this field in the sinusoidal window
+            field_vals = self.df_on_axis_raw[col].iloc[sin_slice].values
 
-                p0 = np.zeros(self.n_modes * 3 + 1)
-                p0[-1] = float(np.mean(field_reg))  # DC guess
+            cos_amps, sin_amps, k_modes = self._find_modes(s_reg, field_vals, self.ds, self.n_modes)
 
-                for ii in range(self.n_modes):
-                    p0[3 * ii + 0] = cos_amps[ii]
-                    p0[3 * ii + 1] = sin_amps[ii]
-                    p0[3 * ii + 2] = k_modes[ii]
+            p0 = np.zeros(self.n_modes * 3 + 1)
+            p0[-1] = float(np.mean(field_vals))  # DC guess
 
-                popt, pcov = curve_fit(self._sinusoid, s_reg, field_reg, p0=p0)
-                self.fit_pars["sines"][der_order][field] = popt
+            for ii in range(self.n_modes):
+                p0[3 * ii + 0] = cos_amps[ii]
+                p0[3 * ii + 1] = sin_amps[ii]
+                p0[3 * ii + 2] = k_modes[ii]
 
-                self.fit_data[der_order][field][sin_slice] = self._sinusoid(s_reg, *popt)
+            popt, pcov = curve_fit(self._sinusoid, s_reg, field_vals, p0=p0)
+
+            # Store fitted parameters into the params dict inside self.df_fit_pars
+            mask = (
+                    (self.df_fit_pars['field_component'] == field)
+                    & (self.df_fit_pars['derivative_x'] == der_order)
+                    & (self.df_fit_pars['region'] == 'center_sine')
+            )
+            if mask.any():
+                par_dict = dict(self.df_fit_pars.loc[mask, 'params'].values[0])  # make a mutable copy
+                d = der_order + 1  # symbolic derivative index starts at 1
+
+                if field in ("Bx", "By"):
+                    pref_A = "Aa" if field == "Bx" else "Ab"
+                    pref_B = "Ba" if field == "Bx" else "Bb"
+                    pref_k = "ka" if field == "Bx" else "kb"
+                    for m in range(self.n_modes):
+                        i = 3 * m
+                        if i < len(popt):
+                            par_dict[sp.Symbol(f"{pref_A}{m + 1}_{d}")] = float(popt[i])
+                        if i + 1 < len(popt):
+                            par_dict[sp.Symbol(f"{pref_B}{m + 1}_{d}")] = float(popt[i + 1])
+                        if i + 2 < len(popt):
+                            par_dict[sp.Symbol(f"{pref_k}{m + 1}_{d}")] = float(popt[i + 2])
+                    if (len(popt) % 3) == 1:
+                        par_dict[sp.Symbol(f"{pref_A}_dc_{d}")] = float(popt[-1])
+                else:  # "Bs"
+                    for m in range(self.n_modes):
+                        i = 3 * m
+                        if i < len(popt):
+                            par_dict[sp.Symbol(f"As{m + 1}")] = float(popt[i])
+                        if i + 1 < len(popt):
+                            par_dict[sp.Symbol(f"Bs{m + 1}")] = float(popt[i + 1])
+                        if i + 2 < len(popt):
+                            par_dict[sp.Symbol(f"ks{m + 1}")] = float(popt[i + 2])
+                    if (len(popt) % 3) == 1:
+                        par_dict[sp.Symbol("As_dc")] = float(popt[-1])
+
+                # write the updated dict back into the DataFrame
+                self.df_fit_pars.loc[mask, 'params'] = [par_dict]
+
+            self.df_on_axis_fit[col].iloc[sin_slice] = self._sinusoid(s_reg, *popt)
+
 
         # If Bs was not fitted, create matching zero entries for Bs that mirror Bx/By shapes
         if not self.Bs_fit:

@@ -45,7 +45,7 @@ print(rows_bs)
 #print(sub)
 
 #print(test_wiggler.df_on_axis_raw.head())
-print(test_wiggler.df_fit_pars.head())
+print(test_wiggler.df_on_axis_raw.head())
 #test_wiggler.plot_fields()
 prrrr
 #print(test_wiggler.fit_pars[0]['Bx']['edge_L'])
