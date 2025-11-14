@@ -181,6 +181,7 @@ class WigglerFieldFitter:
         )
         df.set_index(["X", "Y", "Z"], inplace=True)
         self.df_raw_data = df
+        self.s_full = np.sort(df.index.get_level_values("Z").unique()).astype(float)
 
     def _set_df_fit_pars(self):
         # Build a DataFrame of fit parameters for each derivative order.
@@ -222,68 +223,6 @@ class WigglerFieldFitter:
                     results.loc[len(results)] = [field, der_order, f'R_poly_{i}', 'polynomial', par_dict]
         self.df_fit_pars = results
 
-    """
-    # ALTERNATIVE IMPLEMENTATION OF _set_df_fit_pars USING MULTIINDEX DATAFRAME AND NESTED DICT
-    def _set_df_fit_pars(self):
-        # Build both a human-friendly DataFrame and a nested dict `self.fit_pars`.
-        rows = []
-        index = []
-        fit_pars = {"edge_L": {}, "sines": {}, "edge_R": {}}
-
-        for der_order in range(self.deg + 1):
-            # Exclude longitudinal field derivatives: Bs appears only for derivative 0
-            if der_order == 0:
-                fields = ["Bx", "By", "Bs"]
-            else:
-                fields = ["Bx", "By"]
-
-            key = str(der_order)
-            fit_pars["edge_L"].setdefault(key, {})
-            fit_pars["sines"].setdefault(key, {})
-            fit_pars["edge_R"].setdefault(key, {})
-
-            for field in fields:
-                # choose correct parameter prototypes depending on field
-                if field == "Bx":
-                    poly_proto = self.am_polys.copy()
-                    sine_proto = self.am_sines.copy()
-                elif field == "By":
-                    poly_proto = self.bm_polys.copy()
-                    sine_proto = self.bm_sines.copy()
-                else:  # Bs
-                    poly_proto = self.bs_polys.copy()
-                    sine_proto = self.bs_sines.copy()
-
-                # left edge pieces
-                left_list = []
-                for i in range(1, self.n_pieces_L + 1):
-                    left_list.append(poly_proto.copy())
-                    index.append((field, der_order, f"L_poly_{i}"))
-                    rows.append(poly_proto.copy())
-
-                # center sinusoid region
-                fit_pars["sines"][key][field] = sine_proto.copy()
-                index.append((field, der_order, "center_sine"))
-                rows.append(sine_proto.copy())
-
-                # right edge pieces
-                right_list = []
-                for i in range(1, self.n_pieces_R + 1):
-                    right_list.append(poly_proto.copy())
-                    index.append((field, der_order, f"R_poly_{i}"))
-                    rows.append(poly_proto.copy())
-
-                fit_pars["edge_L"][key][field] = left_list
-                fit_pars["edge_R"][key][field] = right_list
-
-        # MultiIndex DataFrame: index = (field, derivative_x, region), column 'params'
-        idx = pd.MultiIndex.from_tuples(index, names=["field_component", "derivative_x", "region"])
-        self.df_fit_pars = pd.DataFrame({"params": rows}, index=idx)
-
-        # Nested dict for programmatic access (kept in string keys to match existing usage patterns)
-        self.fit_pars = fit_pars
-    """
-
     # PRIVATE
     # This method generates symbolic variables for the sinusoidal fit parameters.
     # The keys are:
@@ -320,9 +259,9 @@ class WigglerFieldFitter:
         # In that case, we immediately set all bs coefficients to zero.
         # Otherwise, the coefficients are left as None and assigned to numerical values later.
         # use the on-axis subset extracted from self.df_raw_data above
-        bx_vals = self.df_on_axis_raw["Bx_0"].abs().dropna()
-        by_vals = self.df_on_axis_raw["By_0"].abs().dropna()
-        bs_vals = self.df_on_axis_raw["Bs_0"].abs().dropna()
+        bx_vals = self.df_on_axis_raw["Bx",0].abs().dropna()
+        by_vals = self.df_on_axis_raw["By",0].abs().dropna()
+        bs_vals = self.df_on_axis_raw["Bs",0].abs().dropna()
 
         if len(bs_vals) and len(bx_vals) and len(by_vals):
             bs_max = bs_vals.max()
@@ -373,9 +312,9 @@ class WigglerFieldFitter:
         # Otherwise, the coefficients are left as None and assigned to numerical values later.
         try:
             # use the on-axis subset extracted from self.df_raw_data above
-            bx_vals = self.df_on_axis_raw["Bx_0"].abs().dropna()
-            by_vals = self.df_on_axis_raw["By_0"].abs().dropna()
-            bs_vals = self.df_on_axis_raw["Bs_0"].abs().dropna()
+            bx_vals = self.df_on_axis_raw["Bx",0].abs().dropna()
+            by_vals = self.df_on_axis_raw["By",0].abs().dropna()
+            bs_vals = self.df_on_axis_raw["Bs",0].abs().dropna()
 
             if len(bs_vals) and len(bx_vals) and len(by_vals):
                 bs_max = bs_vals.max()
@@ -399,25 +338,21 @@ class WigglerFieldFitter:
     # This method extracts on-axis data from the raw DataFrame and computes transverse derivatives.
     # This data is stored in self.df_on_axis_raw.
     def _set_derivative_df(self):
-        # Build a DataFrame of on-axis data with columns labeled per derivative order:
-        # e.g. Bx_0, By_0, Bs_0, Bx_1, By_1, ...
-        subset = self.df_raw_data.xs(self.xy_point, level=("X", "Y")).sort_index().copy()
+        self.df_on_axis_raw = self.df_raw_data.xs(self.xy_point, level=("X", "Y")).sort_index().copy(deep=True)
         # 0th derivative columns
-        subset.rename(columns={'Bx': 'Bx_0', 'By': 'By_0', 'Bs': 'Bs_0'}, inplace=True)
-
-        self.df_on_axis_raw = subset
+        self.df_on_axis_raw.columns = pd.MultiIndex.from_product([self.df_on_axis_raw.columns, [0]])
 
         # compute transverse derivatives for der > 0 and add as columns (skip Bs derivatives)
         for der in range(1, self.deg + 1):
             derivs = self._fit_transverse_polynomials(der=der)
-            subset[f'Bx_{der}'] = derivs['Bx']
-            subset[f'By_{der}'] = derivs['By']
+            self.df_on_axis_raw[('Bx', der)] = derivs['Bx']
+            self.df_on_axis_raw[('By', der)] = derivs['By']
             # intentionally do not compute/store Bs_{der}
 
         # use the on-axis subset extracted from self.df_raw_data above
-        bs_vals = subset["Bs_0"].abs().dropna()
-        bx_vals = subset["Bx_0"].abs().dropna()
-        by_vals = subset["By_0"].abs().dropna()
+        bs_vals = self.df_on_axis_raw["Bs", 0].abs().dropna()
+        bx_vals = self.df_on_axis_raw["Bx", 0].abs().dropna()
+        by_vals = self.df_on_axis_raw["By", 0].abs().dropna()
 
         if len(bs_vals) and len(bx_vals) and len(by_vals):
             bs_max = bs_vals.max()
@@ -430,6 +365,11 @@ class WigglerFieldFitter:
 
                 for key in list(self.bs_sines.keys()):
                     self.bs_sines[key] = 0.0
+
+        # create a zeros-only DataFrame with the same index/columns as the on-axis raw data
+        self.df_on_axis_fit = self.df_on_axis_raw.copy(deep=True)
+        # set all values to 0.0 while preserving index and column structure
+        self.df_on_axis_fit.loc[:, :] = 0.0
 
     # PRIVATE
     # This method first finds the peaks and valleys in the data for Bx and By
@@ -524,20 +464,21 @@ class WigglerFieldFitter:
     # The fitted parameters are stored in the fit_pars attribute.
     # The fitted data is stored in the fit_data attribute.
     # It uses the _find_modes function to get initial guesses for the parameters.
+    # TODO: Change this to dataframe approach.
     def _fit_sinusoids(self, fun=True):
         cols = []
         for der in range(0, self.deg + 1):
-            cols.append(f"Bx_{der}")
-            cols.append(f"By_{der}")
+            cols.append(("Bx", der))
+            cols.append(("By", der))
             if der == 0 and self.Bs_fit:
-                cols.append("Bs_0")
+                cols.append(("Bs", 0))
 
         for col in cols:
             sin_slice = slice(self.borders_idx[0], self.borders_idx[1])
             s_reg = self.s_full[sin_slice]
 
-            # parse field and derivative from column name like "Bx_0"
-            field, der_order = col.split('_')
+            # unpack field and derivative from MultiIndex column tuple like ('Bx', 0)
+            field, der_order = col
             der_order = int(der_order)
 
             # get the data values for this field in the sinusoidal window
@@ -557,9 +498,9 @@ class WigglerFieldFitter:
 
             # Store fitted parameters into the params dict inside self.df_fit_pars
             mask = (
-                    (self.df_fit_pars['field_component'] == field)
-                    & (self.df_fit_pars['derivative_x'] == der_order)
-                    & (self.df_fit_pars['region'] == 'center_sine')
+                (self.df_fit_pars['field_component'] == field)
+                & (self.df_fit_pars['derivative_x'] == der_order)
+                & (self.df_fit_pars['region'] == 'center_sine')
             )
             if mask.any():
                 par_dict = dict(self.df_fit_pars.loc[mask, 'params'].values[0])  # make a mutable copy
@@ -594,6 +535,7 @@ class WigglerFieldFitter:
                 # write the updated dict back into the DataFrame
                 self.df_fit_pars.loc[mask, 'params'] = [par_dict]
 
+            # write fitted values back into the on-axis fit DataFrame using MultiIndex column
             self.df_on_axis_fit[col].iloc[sin_slice] = self._sinusoid(s_reg, *popt)
 
 
@@ -696,6 +638,7 @@ class WigglerFieldFitter:
         borders = [float(s_region[0])] + [float(s_region[sl.stop - 1]) for sl in slices_ord]
         return fit_reg, pieces, borders
 
+    # TODO: Change this to the df approach.
     def _fit_edges(self):
         if self.Bs_fit:
             fields = ["Bx", "By", "Bs"]
@@ -815,7 +758,7 @@ class WigglerFieldFitter:
                 # Evaluate at x=0
                 derivs[field][i] = np.polyval(d_coeffs, 0)
             # Optionally store the result for later use
-            col_name = f"{field}_{der}"
+            col_name = (f"{field}", der)
             # Ensure df_on_axis_raw exists and assign the derivative column
             self.df_on_axis_raw[col_name] = derivs[field]
 

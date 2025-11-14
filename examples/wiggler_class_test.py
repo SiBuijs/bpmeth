@@ -37,15 +37,14 @@ test_wiggler._set_derivative_df()
 test_wiggler._generate_sine_symb_dict()
 test_wiggler._generate_poly_symb_dict()
 test_wiggler._set_df_fit_pars()
-
-mask = test_wiggler.df_fit_pars['field_component'] == 'Bx_0'
-rows_bs = test_wiggler.df_fit_pars[mask]
-print(rows_bs)
+test_wiggler._find_regions()
+print(test_wiggler.borders_idx)
+test_wiggler._fit_sinusoids()
 
 #print(sub)
 
-#print(test_wiggler.df_on_axis_raw.head())
 print(test_wiggler.df_on_axis_raw.head())
+
 #test_wiggler.plot_fields()
 prrrr
 #print(test_wiggler.fit_pars[0]['Bx']['edge_L'])
