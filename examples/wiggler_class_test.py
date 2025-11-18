@@ -24,9 +24,8 @@ test_wiggler = WigglerFieldFitter(
                                     dx=0.001,
                                     dy=0.001,
                                     ds=0.001,
-                                    peak_window=(100, 2100),
                                     n_modes=6,
-                                    poly_pieces=[15, 15],
+                                    poly_pieces=200,
                                     deg=2,
                                     filter_params=None,
                             )
@@ -34,16 +33,14 @@ test_wiggler = WigglerFieldFitter(
 #test_wiggler.set()
 test_wiggler._parse_to_dataframe()
 test_wiggler._set_derivative_df()
-test_wiggler._generate_sine_symb_dict()
-test_wiggler._generate_poly_symb_dict()
-test_wiggler._set_df_fit_pars()
+#test_wiggler._set_df_fit_pars()
 test_wiggler._find_regions()
-print(test_wiggler.borders_idx)
+with pd.option_context('display.max_columns', None, 'display.max_rows', None, 'display.width', None):
+    print(test_wiggler.df_fit_pars)
 test_wiggler._fit_sinusoids()
 
 #print(sub)
 
-print(test_wiggler.df_on_axis_raw.head())
 
 #test_wiggler.plot_fields()
 prrrr

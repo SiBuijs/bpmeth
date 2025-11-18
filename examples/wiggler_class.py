@@ -24,9 +24,8 @@ class WigglerFieldFitter:
             dx=0.001,
             dy=0.001,
             ds=0.001,
-            peak_window=(100, 2100),
             n_modes=6,
-            poly_pieces=[15, 15],
+            poly_pieces=200,
             deg=0,
             filter_params=None,
     ):
@@ -34,21 +33,7 @@ class WigglerFieldFitter:
         self.file_path = file_path
         self.xy_point = xy_point
         self.dx, self.dy, self.ds = dx, dy, ds
-        self.peak_window = peak_window
-        self.n_modes = n_modes
-        self.n_pieces_L, self.n_pieces_R = poly_pieces
-
-        # List that holds a list of borders for each field
-        self.borders_idx  = []
-        self.poly_borders = []
-
-        # Empty symbolic dicts for the fit parameters.
-        self.am_polys = {}      # Corresponds to d^m Bx / dx^m of the polynomials
-        self.bm_polys = {}      # Corresponds to d^m By / dx^m of the polynomials
-        self.bs_polys = {}      # Corresponds to Bs of the polynomials
-        self.am_sines = {}      # Corresponds to d^m Bx / dx^m of the sinusoids
-        self.bm_sines = {}      # Corresponds to d^m By / dx^m of the sinusoids
-        self.bs_sines = {}      # Corresponds to Bs of the sinusoids
+        self.poly_order = 4  # fixed at 4 for now (5 coefficients)
 
         # NOTE: Filter noise is now only used for the right tails, because those are noisy.
         # We can add a more general functionality later.
@@ -115,31 +100,6 @@ class WigglerFieldFitter:
     ####################################################################################################################
 
     # PRIVATE
-    # This function evaluates a sum of (co)sines at the given x values.
-    # The parameters are given as a flat list, where each mode has three parameters:
-    #  - Amplitude of the cosine term
-    #  - Amplitude of the sine term
-    #  - Wave number
-    # Thus, for n modes, the parameter list has length 3*n.
-    @staticmethod
-    def _sinusoid(x, *params):
-        # Define the output array
-        y = np.zeros_like(x, dtype=np.float64)
-
-        # The range depends on the number of sinusoids there are present in the function.
-        # B_x is best approximated with two, whereas B_y only needs one.
-        # Note the integer division by 3, because each mode has three parameters.
-        for A1, A2, k in zip(params[::3], params[1::3], params[2::3]):
-            # General sinusoidal part is a linear combination of cosine and sine.
-            # This is equivalent to a single function with a phase-offset, but more numerically stable.
-            y += A1 * np.cos(k * x) + A2 * np.sin(k * x)
-
-        if (len(params) % 3) == 1:
-            y += params[-1]
-
-        return y
-
-    # PRIVATE
     # Polynomials, which coefficients are determined by the boundary conditions and integral over the interval.
     @staticmethod
     def _poly(s0, s1, coeffs):
@@ -164,17 +124,14 @@ class WigglerFieldFitter:
         poly_s = poly_t(t)
         return poly_s
 
-    # Workflow:
-    # 1. Define the interval [x0, x1]: We know this from the slices.
-    # 2. Compute the function value and derivative at the sinusoidal side (analytically), gives c_3 and c_4 (left side) or c_1 and c_2 (right side).
-    # 3. Compute the function value and derivative at the "data side" (numerically), gives c_1 and c_2 (left side) or c_3 and c_4 (right side).
-    # 4. Compute the integral over the interval (numerically), gives c_5.
-    # 5. This immediately gives the polynomial coefficients for that slice.
+
+
     ####################################################################################################################
     # IDENTIFYING REGIONS AND SETTING BORDERS IN DATA CLASSES
     ####################################################################################################################
     # PRIVATE
     # This method reads the data from the file and stores it in a pandas DataFrame.
+    # It also extracts the on-axis data and checks if Bs is negligible compared to Bx and By.
     def _parse_to_dataframe(self) -> None:
         df = pd.read_csv(
             self.file_path, sep=r"\s+", header=None, names=["X", "Y", "Z", "Bx", "By", "Bs"]
@@ -183,85 +140,13 @@ class WigglerFieldFitter:
         self.df_raw_data = df
         self.s_full = np.sort(df.index.get_level_values("Z").unique()).astype(float)
 
-    def _set_df_fit_pars(self):
-        # Build a DataFrame of fit parameters for each derivative order.
-        colums = ['field_component', 'derivative_x', 'region', 'func_type', 'params']
-        results = pd.DataFrame(columns=colums)
-        for der_order in range(self.deg + 1):
-            if der_order == 1:
-                fields = ["Bx", "By", "Bs"]
-            else:
-                fields = ["Bx", "By"]
-            for field in fields:
-                # Loop through left edge.
-                for i in range(1, self.n_pieces_L + 1):
-                    if field == "Bx":
-                        par_dict = self.am_polys.copy()
-                    elif field == "By":
-                        par_dict = self.bm_polys.copy()
-                    else:  # Bs
-                        par_dict = self.bs_polys.copy()
-                    results.loc[len(results)] = [field, der_order, f'L_poly_{i}', 'polynomial', par_dict]
+        # Check if Bs is much smaller than Bx and By
+        self.df_on_axis_raw = self.df_raw_data.xs(self.xy_point, level=("X", "Y")).sort_index().copy(deep=True)
 
-                # Sinusoidal center region.
-                if field == "Bx":
-                    par_dict = self.am_sines.copy()
-                elif field == "By":
-                    par_dict = self.bm_sines.copy()
-                else:  # Bs
-                    par_dict = self.bs_sines.copy()
-                results.loc[len(results)] = [field, der_order, 'center_sine', 'sinusoid', par_dict]
-
-                # Loop through right edge.
-                for i in range(1, self.n_pieces_R + 1):
-                    if field == "Bx":
-                        par_dict = self.am_polys.copy()
-                    elif field == "By":
-                        par_dict = self.bm_polys.copy()
-                    else:  # Bs
-                        par_dict = self.bs_polys.copy()
-                    results.loc[len(results)] = [field, der_order, f'R_poly_{i}', 'polynomial', par_dict]
-        self.df_fit_pars = results
-
-    # PRIVATE
-    # This method generates symbolic variables for the sinusoidal fit parameters.
-    # The keys are:
-    # Aa{m}_{d} : Amplitude of cosine term for mode m, derivative order d of Bx
-    # Ba{m}_{d} : Amplitude of sine term for mode m, derivative order d of Bx
-    # ka{m}_{d} : Wave number for mode m, derivative order d of Bx
-    # Ab{m}_{d} : Amplitude of cosine term for mode m, derivative order d of By
-    # Bb{m}_{d} : Amplitude of sine term for mode m, derivative order d of By
-    # kb{m}_{d} : Wave number for mode m, derivative order d of By
-    # As{m}     : Amplitude of cosine term for mode m of Bs
-    # Bs{m}     : Amplitude of sine term for mode m of Bs
-    # ks{m}     : Wave number for mode m of Bs
-    # The DC terms are:
-    # Aa_dc_{d} : DC term for derivative order d of Bx
-    # Ab_dc_{d} : DC term for derivative order d of By
-    # As_dc     : DC term for Bs
-    def _generate_sine_symb_dict(self):
-        n_modes = self.n_modes
-        n_ders = self.deg
-
-        Aa = {sp.Symbol(f"Aa{m}_{d}"): None for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-        Ba = {sp.Symbol(f"Ba{m}_{d}"): None for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-        ka = {sp.Symbol(f"ka{m}_{d}"): None for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-        Aa_dc = {sp.Symbol(f"Aa_dc_{d}"): None for d in range(1, n_ders + 2)}
-        self.am_sines = {**Aa, **Ba, **ka, **Aa_dc}
-
-        Ab = {sp.Symbol(f"Ab{m}_{d}"): None for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-        Bb = {sp.Symbol(f"Bb{m}_{d}"): None for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-        kb = {sp.Symbol(f"kb{m}_{d}"): None for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-        Ab_dc = {sp.Symbol(f"Ab_dc_{d}"): None for d in range(1, n_ders + 2)}
-        self.bm_sines = {**Ab, **Bb, **kb, **Ab_dc}
-
-        # Logic: If Bs is 10^-3 times smaller than max(Bx) or max(By), we do not fit it.
-        # In that case, we immediately set all bs coefficients to zero.
-        # Otherwise, the coefficients are left as None and assigned to numerical values later.
         # use the on-axis subset extracted from self.df_raw_data above
-        bx_vals = self.df_on_axis_raw["Bx",0].abs().dropna()
-        by_vals = self.df_on_axis_raw["By",0].abs().dropna()
-        bs_vals = self.df_on_axis_raw["Bs",0].abs().dropna()
+        bs_vals = self.df_on_axis_raw["Bs"].abs().dropna()
+        bx_vals = self.df_on_axis_raw["Bx"].abs().dropna()
+        by_vals = self.df_on_axis_raw["By"].abs().dropna()
 
         if len(bs_vals) and len(bx_vals) and len(by_vals):
             bs_max = bs_vals.max()
@@ -269,76 +154,13 @@ class WigglerFieldFitter:
             if denom > 0 and (bs_max / denom) < self.Bs_tol:
                 self.Bs_fit = False
 
-        print(f"self.Bs_fit = {self.Bs_fit}")
-
-        if self.Bs_fit:
-            dict_entry = None
-        else:
-            dict_entry = 0.0
-
-        As    = {sp.Symbol(f"As{m}"): dict_entry for m in range(1, n_modes + 1)}
-        Bs    = {sp.Symbol(f"Bs{m}"): dict_entry for m in range(1, n_modes + 1)}
-        ks    = {sp.Symbol(f"ks{m}"): dict_entry for m in range(1, n_modes + 1)}
-        As_dc = {sp.Symbol("As_dc") : dict_entry}
-
-        self.bs_sines = {**As, **Bs, **ks, **As_dc}
 
 
     # PRIVATE
-    # This method generates symbolic variables for the polynomial fit parameters.
-    # The keys are:
-    # a{d}_{p} : Coefficient of s^p for derivative order d of Bx
-    # b{d}_{p} : Coefficient of s^p for derivative order d of By
-    # bs_{p}   : Coefficient of s^p for Bs
-    # The degree of the polynomials is fixed at 4 (5 coefficients), because of the basis that we choose.
-    def _generate_poly_symb_dict(self):
-        n_ders = self.deg
-        deg_poly = 4  # degree 4 -> coefficients 0..4
-
-        # create symbols a{der}_{power} and b{der}_{power} for each derivative (der = 1..n_ders+1)
-        self.am_polys = {
-            sp.Symbol(f"a{d}_{p}"): None
-            for d in range(1, n_ders + 2)
-            for p in range(deg_poly + 1)
-        }
-        self.bm_polys = {
-            sp.Symbol(f"b{d}_{p}"): None
-            for d in range(1, n_ders + 2)
-            for p in range(deg_poly + 1)
-        }
-
-        # Logic: If Bs is 10^-3 times smaller than max(Bx) or max(By), we do not fit it.
-        # In that case, we immediately set all bs coefficients to zero.
-        # Otherwise, the coefficients are left as None and assigned to numerical values later.
-        try:
-            # use the on-axis subset extracted from self.df_raw_data above
-            bx_vals = self.df_on_axis_raw["Bx",0].abs().dropna()
-            by_vals = self.df_on_axis_raw["By",0].abs().dropna()
-            bs_vals = self.df_on_axis_raw["Bs",0].abs().dropna()
-
-            if len(bs_vals) and len(bx_vals) and len(by_vals):
-                bs_max = bs_vals.max()
-                denom = min(bx_vals.max(), by_vals.max())
-                if denom > 0 and (bs_max / denom) < self.Bs_tol:
-                    self.Bs_fit = False
-
-        except Exception:
-            # On any unexpected issue, leave Bs fitting enabled (fail-safe)
-            self.Bs_fit = True
-
-        if self.Bs_fit:
-            dict_entry = None
-        else:
-            dict_entry = 0.0
-
-        # bs coefficients are not per-derivative here (names: bs_0 .. bs_4)
-        self.bs_polys = {sp.Symbol(f"bs_{p}"): dict_entry for p in range(deg_poly + 1)}
-
-    # PRIVATE
-    # This method extracts on-axis data from the raw DataFrame and computes transverse derivatives.
-    # This data is stored in self.df_on_axis_raw.
+    # This method extracts on-axis data from the raw DataFrame and fits it to polynomials.
+    # It computes the derivatives of said polynomials and stores them in the self.df_on_axis_raw DataFrame.
+    # The data is not "raw" in the technical sense, but is used to fit a function of s to.
     def _set_derivative_df(self):
-        self.df_on_axis_raw = self.df_raw_data.xs(self.xy_point, level=("X", "Y")).sort_index().copy(deep=True)
         # 0th derivative columns
         self.df_on_axis_raw.columns = pd.MultiIndex.from_product([self.df_on_axis_raw.columns, [0]])
 
@@ -349,234 +171,115 @@ class WigglerFieldFitter:
             self.df_on_axis_raw[('By', der)] = derivs['By']
             # intentionally do not compute/store Bs_{der}
 
-        # use the on-axis subset extracted from self.df_raw_data above
-        bs_vals = self.df_on_axis_raw["Bs", 0].abs().dropna()
-        bx_vals = self.df_on_axis_raw["Bx", 0].abs().dropna()
-        by_vals = self.df_on_axis_raw["By", 0].abs().dropna()
-
-        if len(bs_vals) and len(bx_vals) and len(by_vals):
-            bs_max = bs_vals.max()
-            denom = min(bx_vals.max(), by_vals.max())
-            if denom > 0 and (bs_max / denom) < self.Bs_tol:
-                self.Bs_fit = False
-                # Make all elements of bs_polys and bs_sines zero
-                for key in list(self.bs_polys.keys()):
-                    self.bs_polys[key] = 0.0
-
-                for key in list(self.bs_sines.keys()):
-                    self.bs_sines[key] = 0.0
-
         # create a zeros-only DataFrame with the same index/columns as the on-axis raw data
         self.df_on_axis_fit = self.df_on_axis_raw.copy(deep=True)
         # set all values to 0.0 while preserving index and column structure
         self.df_on_axis_fit.loc[:, :] = 0.0
 
+
+
     # PRIVATE
-    # This method first finds the peaks and valleys in the data for Bx and By
-    # Then, it combines them into one array for the extrema of Bx and By
-    # Finally, it sets the borders_idx attribute of the FieldChannel objects for Bx and By
+    # This method loops over all fields and derivatives.
+    # It finds peaks and valleys in the data within the peak_window, with specified width and prominence.
     def _find_regions(self):
-        w_left = self.peak_window[0]
-        w_right = self.peak_window[1]
+        fields = ["Bx", "By"]
 
-        field = "Bx"
+        for field in fields:
+            for der in range(0, self.deg + 1):
+                series = self.df_on_axis_raw[(field, der)].values
 
-        # Use df_raw_data column values (fall back to .loc if necessary) as 1D array for peak finding
-        series = self.df_raw_data[field].values
+                # TODO: The filters in find_peaks are very useful for filtering noisy components in the data.
+                # TODO: Still check if this adequately picks up small (but real) features in the data.
+                # TODO: Chose width=15 and prominence=std_series as reasonable starting points.
+                # TODO: With these settings, it correctly reduces the first derivative to one piece only.
+                std_series = np.std(series)
+                field_peaks = find_peaks(series, width=15, prominence=std_series)[0]
+                field_valleys = find_peaks(-series, width=15, prominence=std_series)[0]
+                field_extrema = np.sort(np.concatenate((field_peaks, field_valleys)))
 
-        field_peaks = find_peaks(series)[0]
-        field_valleys = find_peaks(-series)[0]
-        field_peaks = field_peaks[np.logical_and(field_peaks > w_left, field_peaks < w_right)]
-        field_valleys = field_valleys[np.logical_and(field_valleys > w_left, field_valleys < w_right)]
-        field_extrema = np.sort(np.concatenate((field_peaks, field_valleys)))
+                field_extrema = np.insert(field_extrema, 0, 0)
+                field_extrema = np.append(field_extrema, len(series) - 1)
 
-        self.borders_idx = [field_extrema[4], field_extrema[-4]]
+                # Set region starts in df_fit_pars
+                n_pieces = len(field_extrema+1)  # number of pieces is number of extrema - 1
+                print(n_pieces)
+                self._set_df_fit_pars(der, n_pieces, field, field_extrema)
 
-    # PRIVATE
-    # This is an impromptu noise-filter.
-    # Will probably need to be improved later.
-    # For now, it only filters noise from the right tail of the data, because that's where the noise is present.
-    """
-    def _filter_noise(self):
-        from scipy.signal import savgol_filter
-        from scipy.signal import medfilt
+        # If Bs is to be fitted, do the same for Bs
+        if self.Bs_fit:
+            field = "Bs"
+            der = 0
+            series = self.df_raw_data[field].values
 
-        left_idx = self.filter_params[0]
-        right_idx = self.filter_params[1]
-        kernel_size = self.filter_params[2]
-        window_length = self.filter_params[3]
-        polyorder = self.filter_params[4]
+            field_peaks = find_peaks(series)[0]
+            field_valleys = find_peaks(-series)[0]
+            field_peaks = field_peaks[np.logical_and(field_peaks > w_left, field_peaks < w_right)]
+            field_valleys = field_valleys[np.logical_and(field_valleys > w_left, field_valleys < w_right)]
+            field_extrema = np.sort(np.concatenate((field_peaks, field_valleys)))
 
-        for field in ["Bx", "By", "Bs"]:
+            field_extrema = np.insert(field_extrema, 0, 0)
+            field_extrema = np.append(field_extrema, len(series) - 1)
 
-            # Because Bs is very noisy, we also filter the left tail.
-            # This is not necessary for Bx and By, because their left tails are not noisy.
-            if field == "Bs":
-                tail = slice(None, left_idx)
-                m = medfilt(self.raw_data[field][tail].copy(), kernel_size=kernel_size)
-                y_sm = savgol_filter(m, window_length=window_length, polyorder=polyorder)
-                self.raw_data[field][tail] = y_sm
+            # Set region starts in df_fit_pars
+            n_pieces = len(field_extrema)  # number of pieces is number of extrema
+            self._set_df_fit_pars(der, n_pieces, field, field_extrema)
 
-                tail = slice(right_idx, None)
-                m = medfilt(self.raw_data[field][tail].copy(), kernel_size=kernel_size)  # kernel_size must be odd
-                y_sm = savgol_filter(m, window_length=window_length, polyorder=polyorder)
-                self.raw_data[field][tail] = y_sm
+        else:
+            self._set_df_fit_pars(0, 1, "Bs", [0])
 
-            tail = slice(right_idx, None)
-            m = medfilt(self.raw_data[field][tail].copy(), kernel_size=kernel_size)  # kernel_size must be odd
-            y_sm = savgol_filter(m, window_length=window_length, polyorder=polyorder)
-            self.raw_data[field][tail] = y_sm
-    """
+        # TODO: Something goes wrong with the indexing of idx_end.
+        self.df_fit_pars.set_index(['field_component', 'derivative_x', 'region_name', 's_start', 's_end', 'idx_start', 'idx_end'],
+                                       inplace=True)
 
-    ####################################################################################################################
-    # SINUSOID FITTING
-    ####################################################################################################################
+
 
     # PRIVATE
-    # This function finds the amplitudes and frequencies of the (co)sines present in the data.
-    @staticmethod
-    def _find_modes(x, y, dx, n_modes):
-        # Fourier Transform and frequencies
-        fft = sc.fft.fft(y)
-        fftfreq = sc.fft.fftfreq(len(x), dx)
+    # This method initializes and appends rows to the df_fit_pars DataFrame.
+    # Each row corresponds to a polynomial piece for a specific field and derivative.
+    # It stores metadata about the piece, including parameter names and initial values.
+    # This method is called by _find_regions to populate the DataFrame.
+    # In case the set consists of only one piece, the parameters are initialized to 0.
+    def _set_df_fit_pars(self, der_order, n_pieces, field, idx_extrema):
+        rows = []
+        for i in range(n_pieces-1):
+            if field == "Bx":
+                pars = [f"a_{der_order+1}_{k}" for k in range(self.poly_order + 1)]
+            elif field == "By":
+                pars = [f"b_{der_order+1}_{k}" for k in range(self.poly_order + 1)]
+            else:  # Bs
+                pars = [f"bs_{k}" for k in range(self.poly_order + 1)]
 
-        # Only keep positive frequencies
-        fft = fft[fftfreq > 0]
-        fftfreq = fftfreq[fftfreq > 0]
+            idx_start = idx_extrema[i]
+            idx_end = idx_extrema[i+1]
+            s_start = self.s_full[idx_start]
+            s_end = self.s_full[idx_end]
 
-        # Find peaks in the magnitude spectrum
-        peaks = find_peaks(np.abs(fft))[0]
+            for idx, name in enumerate(pars):
+                rows.append({
+                    "field_component": field,
+                    "derivative_x": der_order,
+                    "region_name": f"Poly_{i}",
+                    "s_start": s_start,
+                    "s_end": s_end,
+                    "idx_start": idx_start,
+                    "idx_end": idx_end,
+                    "param_index": idx,
+                    "param_name": name,
+                    "param_symbol": sp.Symbol(name),
+                    "param_value": 0 if n_pieces == 1 else None,
+                })
 
-        # Order peaks by magnitude, descending
-        order = np.argsort(np.abs(fft[peaks]))[::-1]
-        peaks = peaks[order][:n_modes]
+        results = pd.DataFrame(rows)
+        self.df_fit_pars = pd.concat([self.df_fit_pars, results])
 
-        # Extract amplitudes and frequencies in the same order
-        amplitudes = fft[peaks]
-        cos_amps = 2 * dx * amplitudes.real
-        sin_amps = -2 * dx * amplitudes.imag
-        k_values = 2 * np.pi * fftfreq[peaks]
-
-        return cos_amps, sin_amps, k_values
-
-    # PRIVATE
-    # This method fits sinusoids to the data in the regions defined by borders_idx.
-    # The fitted parameters are stored in the fit_pars attribute.
-    # The fitted data is stored in the fit_data attribute.
-    # It uses the _find_modes function to get initial guesses for the parameters.
-    # TODO: Change this to dataframe approach.
-    def _fit_sinusoids(self, fun=True):
-        cols = []
-        for der in range(0, self.deg + 1):
-            cols.append(("Bx", der))
-            cols.append(("By", der))
-            if der == 0 and self.Bs_fit:
-                cols.append(("Bs", 0))
-
-        for col in cols:
-            sin_slice = slice(self.borders_idx[0], self.borders_idx[1])
-            s_reg = self.s_full[sin_slice]
-
-            # unpack field and derivative from MultiIndex column tuple like ('Bx', 0)
-            field, der_order = col
-            der_order = int(der_order)
-
-            # get the data values for this field in the sinusoidal window
-            field_vals = self.df_on_axis_raw[col].iloc[sin_slice].values
-
-            cos_amps, sin_amps, k_modes = self._find_modes(s_reg, field_vals, self.ds, self.n_modes)
-
-            p0 = np.zeros(self.n_modes * 3 + 1)
-            p0[-1] = float(np.mean(field_vals))  # DC guess
-
-            for ii in range(self.n_modes):
-                p0[3 * ii + 0] = cos_amps[ii]
-                p0[3 * ii + 1] = sin_amps[ii]
-                p0[3 * ii + 2] = k_modes[ii]
-
-            popt, pcov = curve_fit(self._sinusoid, s_reg, field_vals, p0=p0)
-
-            # Store fitted parameters into the params dict inside self.df_fit_pars
-            mask = (
-                (self.df_fit_pars['field_component'] == field)
-                & (self.df_fit_pars['derivative_x'] == der_order)
-                & (self.df_fit_pars['region'] == 'center_sine')
-            )
-            if mask.any():
-                par_dict = dict(self.df_fit_pars.loc[mask, 'params'].values[0])  # make a mutable copy
-                d = der_order + 1  # symbolic derivative index starts at 1
-
-                if field in ("Bx", "By"):
-                    pref_A = "Aa" if field == "Bx" else "Ab"
-                    pref_B = "Ba" if field == "Bx" else "Bb"
-                    pref_k = "ka" if field == "Bx" else "kb"
-                    for m in range(self.n_modes):
-                        i = 3 * m
-                        if i < len(popt):
-                            par_dict[sp.Symbol(f"{pref_A}{m + 1}_{d}")] = float(popt[i])
-                        if i + 1 < len(popt):
-                            par_dict[sp.Symbol(f"{pref_B}{m + 1}_{d}")] = float(popt[i + 1])
-                        if i + 2 < len(popt):
-                            par_dict[sp.Symbol(f"{pref_k}{m + 1}_{d}")] = float(popt[i + 2])
-                    if (len(popt) % 3) == 1:
-                        par_dict[sp.Symbol(f"{pref_A}_dc_{d}")] = float(popt[-1])
-                else:  # "Bs"
-                    for m in range(self.n_modes):
-                        i = 3 * m
-                        if i < len(popt):
-                            par_dict[sp.Symbol(f"As{m + 1}")] = float(popt[i])
-                        if i + 1 < len(popt):
-                            par_dict[sp.Symbol(f"Bs{m + 1}")] = float(popt[i + 1])
-                        if i + 2 < len(popt):
-                            par_dict[sp.Symbol(f"ks{m + 1}")] = float(popt[i + 2])
-                    if (len(popt) % 3) == 1:
-                        par_dict[sp.Symbol("As_dc")] = float(popt[-1])
-
-                # write the updated dict back into the DataFrame
-                self.df_fit_pars.loc[mask, 'params'] = [par_dict]
-
-            # write fitted values back into the on-axis fit DataFrame using MultiIndex column
-            self.df_on_axis_fit[col].iloc[sin_slice] = self._sinusoid(s_reg, *popt)
+        #with pd.option_context('display.max_columns', None, 'display.width', None):
+        #    print(self.df_fit_pars)
 
 
-        # If Bs was not fitted, create matching zero entries for Bs that mirror Bx/By shapes
-        if not self.Bs_fit:
-            for der_order in range(self.deg + 1):
-                bx = self.fit_pars["sines"][der_order].get("Bx")
-                by = self.fit_pars["sines"][der_order].get("By")
-                ref = bx if bx is not None else by
-                if ref is None:
-                    self.fit_pars["sines"][der_order]["Bs"] = np.zeros(1)
-                else:
-                    self.fit_pars["sines"][der_order]["Bs"] = np.zeros_like(ref)
 
     ####################################################################################################################
     # PIECEWISE POLYNOMIAL FITTING
     ####################################################################################################################
-
-    # PRIVATE
-    # Takes the fit parameters from the sinusoidal fit
-    # and computes the boundary conditions for the polynomial fits
-    # fL, fR are the function values at the left and right boundaries
-    # dL, dR are the first derivatives at the left and right boundaries
-    # ddL, ddR are the second derivatives at the left and right boundaries
-    def _boundary_from_sine(self, field, s_mid, der_order=0):
-        xL, xR = s_mid[0] - self.ds, s_mid[-1] + self.ds
-        fL = fR = dL = dR = ddL = ddR = 0.0
-
-        params = self.fit_pars["sines"][der_order][field]
-        for Ac, As, k in zip(params[::3], params[1::3], params[2::3]):
-            fL += Ac * np.cos(k * xL) + As * np.sin(k * xL)
-            fR += Ac * np.cos(k * xR) + As * np.sin(k * xR)
-            dL += k * (As * np.cos(k * xL) - Ac * np.sin(k * xL))
-            dR += k * (As * np.cos(k * xR) - Ac * np.sin(k * xR))
-
-        if (len(params) % 3) == 1:
-            c0 = params[-1]
-            fL += c0
-            fR += c0
-
-        return np.array([fL, fR, dL, dR], dtype=float)
 
     # PRIVATE
     # This method computes the boundary conditions from a previously fitted polynomial.
@@ -587,20 +290,15 @@ class WigglerFieldFitter:
         dp = poly.deriv()
         return np.array([poly(xL), poly(xR), dp(xL), dp(xR)], dtype=float)
 
-    # PRIVATE
-    # This slices a region into num_regions slices of (approximately) equal size.
-    @staticmethod
-    def _balanced_slices(n, num_regions):
-        base, rem = n // num_regions, n % num_regions
-        slices, start = [], 0
-        for i in range(num_regions):
-            end = start + base + (1 if i < rem else 0)
-            if end > start:
-                slices.append(slice(start, end))
-            start = end
-        return slices
+    # To get a sub_df: sub_df = self.df_fit_pars.loc[
+    #     (field, der_order)
+    # ]
+
+    def _fit_single_poly(self, sub_df):
+        return
 
     def _fit_poly_side(self, field, s_region, b_region, s_mid, num_slices, left_side, der_order):
+        # keep legacy implementation for callers that still need it
         slices = self._balanced_slices(len(s_region), num_slices)
         # fit order: first piece next to the center, then outward
         slices_proc = list(reversed(slices)) if left_side else slices
@@ -618,13 +316,8 @@ class WigglerFieldFitter:
             else:
                 boundaries = self._boundary_from_poly(prev_s, prev_poly)
 
-            if left_side:
-                dbL = (-3 * b_this[0] + 4 * b_this[1] - b_this[2]) / (2 * self.ds)
-                coeffs = (b_this[0], dbL, boundaries[0], boundaries[2], integral_this)
-            else:
-                dbR = (3 * b_this[-1] - 4 * b_this[-2] + b_this[-3]) / (2 * self.ds)
-                coeffs = (boundaries[1], boundaries[3], b_this[-1], dbR, integral_this)
-            # ----------------------------------------------------------
+            dbL = (-3 * b_this[0] + 4 * b_this[1] - b_this[2]) / (2 * self.ds)
+            coeffs = (b_this[0], dbL, boundaries[0], boundaries[2], integral_this)
 
             x0 = float(s_this[0])
             x1 = float(s_this[-1])
@@ -638,75 +331,91 @@ class WigglerFieldFitter:
         borders = [float(s_region[0])] + [float(s_region[sl.stop - 1]) for sl in slices_ord]
         return fit_reg, pieces, borders
 
-    # TODO: Change this to the df approach.
+
+    # Replace array-based edge fitter with DataFrame-driven version.
+    # Use self.df_on_axis_raw (index = s positions) and self.df_fit_pars (rows contain param_name/param_value, region info)
+    # Assign fitted values into self.df_on_axis_fit[(field, derivative)].
     def _fit_edges(self):
+        import pandas as _pd
+
+        # prepare fields to process
         if self.Bs_fit:
             fields = ["Bx", "By", "Bs"]
         else:
             fields = ["Bx", "By"]
+
+        # make a safe copy / easier-to-query table of fit parameters
+        if getattr(self, "df_fit_pars", None) is None or self.df_fit_pars.empty:
+            return
+
+        dfp = self.df_fit_pars.reset_index()
+
+        # helper: build regions (start idx and coefficients) for a given field & derivative
+        def _build_regions(field, der):
+            sel = dfp[(dfp["field_component"] == field) & (dfp["derivative_x"] == der)]
+            if sel.empty:
+                return []
+
+            # group by region_name and pick up idx_start and param rows
+            regions = []
+            grouped = sel.groupby(["region_name", "idx_start", "s_start"])
+            for (rname, idx_start, s_start), g in grouped:
+                g_sorted = g.sort_values("param_index")
+                vals = g_sorted["param_value"].tolist()
+                # replace missing param_values with 0.0
+                coeffs = np.array([0.0 if (_pd.isna(v) or v is None) else float(v) for v in vals], dtype=float)
+                regions.append((int(idx_start), float(s_start), coeffs))
+            # sort by integer start index
+            regions.sort(key=lambda t: t[0])
+            return regions
+
+        # For each field and derivative, assemble and assign fitted polynomials into df_on_axis_fit
+        n_total = len(self.s_full)
         for field in fields:
-            for der_order in range(self.deg+1):
-                # center region slice and grid
-                i0, i1 = self.borders_idx
-                s_mid = self.s_full[i0:i1]
-
-                # tails
-                s_left = self.s_full[:i0]
-                s_right = self.s_full[i1:]
-                b_left = self.raw_data[der_order][field][:i0]
-                b_right = self.raw_data[der_order][field][i1:]
-
-                # degrees + number of chained pieces per side (configurable)
-                nL = self.n_pieces_L
-                nR = self.n_pieces_R
-                fitL, piecesL, bordersL = self._fit_poly_side(field, s_left, b_left, s_mid, nL, left_side=True,
-                                                              der_order=der_order)
-                self.fit_data[der_order][field][:i0] = fitL
-                fitR, piecesR, bordersR = self._fit_poly_side(field, s_right, b_right, s_mid, nR, left_side=False,
-                                                              der_order=der_order)
-
-                self.fit_data[der_order][field][i1:] = fitR
-
-                # after computing fitL/piecesL and fitR/piecesR:
-                self.fit_data[der_order][field][:i0] = fitL
-                self.fit_data[der_order][field][i1:] = fitR
-
-                # NEW: store coefficients (ascending-power) for exporter
-                self.fit_pars["edge_L"][der_order][field] = [p[1].coef for p in piecesL]  # order: near-center -> far-left
-                self.fit_pars["edge_R"][der_order][field] = [p[1].coef for p in piecesR]  # order: near-center -> far-right
-
-                # existing border assembly (kept)
-                self.poly_borders = bordersL[:-1] + [float(self.s_full[i0]), float(self.s_full[i1])] + bordersR[1:]
-
-        # If Bs was not fitted, create matching zero entries for Bs that mirror Bx/By shapes
-        # Only create Bs entries for the 0th derivative (Bs has no higher derivatives).
-        if not self.Bs_fit:
-            for der_order in range(self.deg + 1):
-                # Ensure dicts exist
-                self.fit_pars["edge_L"].setdefault(der_order, {})
-                self.fit_pars["edge_R"].setdefault(der_order, {})
-
-                if der_order != 0:
-                    # leave higher-derivative entries jagged / absent for Bs
+            for der in range(0, self.deg + 1):
+                # skip if target column not present
+                if (field, der) not in self.df_on_axis_fit.columns:
                     continue
 
-                bx_L = self.fit_pars["edge_L"][der_order].get("Bx")
-                if bx_L is None:
-                    self.fit_pars["edge_L"][der_order]["Bs"] = []
-                else:
-                    if isinstance(bx_L, list):
-                        self.fit_pars["edge_L"][der_order]["Bs"] = [np.zeros_like(coef) for coef in bx_L]
-                    else:
-                        self.fit_pars["edge_L"][der_order]["Bs"] = np.zeros_like(bx_L)
+                regions = _build_regions(field, der)
+                if not regions:
+                    continue
 
-                bx_R = self.fit_pars["edge_R"][der_order].get("Bx")
-                if bx_R is None:
-                    self.fit_pars["edge_R"][der_order]["Bs"] = []
-                else:
-                    if isinstance(bx_R, list):
-                        self.fit_pars["edge_R"][der_order]["Bs"] = [np.zeros_like(coef) for coef in bx_R]
-                    else:
-                        self.fit_pars["edge_R"][der_order]["Bs"] = np.zeros_like(bx_R)
+                for i, (start_idx, s_start, coeffs) in enumerate(regions):
+                    end_idx = regions[i + 1][0] if (i + 1) < len(regions) else n_total
+                    # guard
+                    if start_idx >= end_idx:
+                        continue
+                    s_region = self.s_full[start_idx:end_idx]
+                    if s_region.size == 0:
+                        continue
+                    x0 = float(s_region[0])
+                    x1 = float(s_region[-1])
+                    try:
+                        poly = self._poly(x0, x1, coeffs)
+                        values = poly(s_region)
+                    except Exception:
+                        # fallback: fill zeros on failure
+                        values = np.zeros_like(s_region, dtype=float)
+
+                    # assign into df_on_axis_fit by integer positions (iloc)
+                    try:
+                        # ensure we do not attempt to set with mismatched length
+                        self.df_on_axis_fit[(field, der)].iloc[start_idx:end_idx] = values
+                    except Exception:
+                        # fallback using index-based assignment (align by s values)
+                        idx_slice = self.df_on_axis_fit.index[start_idx:end_idx]
+                        self.df_on_axis_fit.loc[idx_slice, (field, der)] = values
+
+        # Optionally construct a simple poly_borders list from a reference field (used by later code)
+        # Prefer Bx, derivative 0 as reference if available
+        ref_regions = _build_regions("Bx", 0)
+        if ref_regions:
+            borders = [float(r[1]) for r in ref_regions]
+            # append final end
+            if borders[-1] != float(self.s_full[-1]):
+                borders.append(float(self.s_full[-1]))
+            self.poly_borders = borders
 
     ####################################################################################################################
     # TRANSVERSE GRADIENTS
