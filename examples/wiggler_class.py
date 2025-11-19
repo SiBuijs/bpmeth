@@ -53,12 +53,8 @@ class WigglerFieldFitter:
     # Setter method that calls all the other methods to arrive at a fit.
     def set(self):
         self._parse_to_dataframe()
-        self._set_df_fit_pars()
-        self.select_xy()
-        if self.filter_params != None:
-            self._filter_noise()
+        self._set_derivative_df()
         self._find_regions()
-        self._fit_sinusoids()
         self._fit_edges()
 
     # Naslagwerkje:
@@ -101,6 +97,11 @@ class WigglerFieldFitter:
 
     # PRIVATE
     # Polynomials, which coefficients are determined by the boundary conditions and integral over the interval.
+    # c1 = f(s0)
+    # c2 = f'(s0)
+    # c3 = f(s1)
+    # c4 = f'(s1)
+    # c5 = integral from s0 to s1 of f(s) ds
     @staticmethod
     def _poly(s0, s1, coeffs):
         c1, c2, c3, c4, c5 = coeffs
@@ -227,8 +228,7 @@ class WigglerFieldFitter:
         else:
             self._set_df_fit_pars(0, 1, "Bs", [0])
 
-        # TODO: Something goes wrong with the indexing of idx_end.
-        self.df_fit_pars.set_index(['field_component', 'derivative_x', 'region_name', 's_start', 's_end', 'idx_start', 'idx_end'],
+        self.df_fit_pars.set_index(['field_component', 'derivative_x', 'region_name', 's_start', 's_end', 'idx_start', 'idx_end', 'param_index'],
                                        inplace=True)
 
 
@@ -285,137 +285,93 @@ class WigglerFieldFitter:
     # This method computes the boundary conditions from a previously fitted polynomial.
     # xL, xR are the left and right boundaries of the new region.
     # dp and ddp are the first and second derivatives of the polynomial.
-    def _boundary_from_poly(self, s_prev, poly):
-        xL, xR = s_prev[0] - self.ds, s_prev[-1] + self.ds
+    def _boundary_from_poly(self, sL, poly):
         dp = poly.deriv()
-        return np.array([poly(xL), poly(xR), dp(xL), dp(xR)], dtype=float)
+        return np.array([poly(sL), dp(sL)], dtype=float)
+
+    def _booundary_from_finite_differences(self, b_region, right_side=False):
+        if right_side:
+            dbL = (-3 * b_region[0] + 4 * b_region[1] - b_region[2]) / (2 * self.ds)
+            return np.array([b_region[0], dbL], dtype=float)
+        else:
+            dbR = (3 * b_region[-1] - 4 * b_region[-2] + b_region[-3]) / (2 * self.ds)
+            return np.array([b_region[-1], dbR], dtype=float)
 
     # To get a sub_df: sub_df = self.df_fit_pars.loc[
     #     (field, der_order)
     # ]
 
-    def _fit_single_poly(self, sub_df):
-        return
+    # Desired logic:
+    # - Loop over field and derivative order
+    # - Within that, loop over regions
+    # - For each region, extract the s-values and magnetic field values from the data
+    # - Calculate the function value and derivative on the left side from the "previous" polynomial (pay mind to the left edge)
+    # - Calculate the function value and derivative on the right side from the data using finite differences
+    # - Calculate the integral over the region using trapezoidal rule
+    # - Insert these coefficients into self._poly. This returns the polynomial in this region
+    # - Assign the coefficients of this polynomial into the appropriate rows in self.df_fit_pars (a_1_0, a_1_1, ..., b_1_0, etc)
 
-    def _fit_poly_side(self, field, s_region, b_region, s_mid, num_slices, left_side, der_order):
-        # keep legacy implementation for callers that still need it
-        slices = self._balanced_slices(len(s_region), num_slices)
-        # fit order: first piece next to the center, then outward
-        slices_proc = list(reversed(slices)) if left_side else slices
+    # What this function needs to know:
+    # - Raw data of the field/derivative combination in question, in the region, specified by start and end indices
+    # - The s-values of the region in question, similarly defined by start and end indices
+    # - The previous polynomial to get the left boundary conditions from
+    # Need to make sure to calculate the right boundary conditions from the data itself, with finite differences around the correct index.
 
-        fit_reg = np.zeros_like(s_region, dtype=float)
-        pieces = []
-        prev_poly = None
-        prev_s = None
+    # To Do:
+    # We can do several things;
+    # 1) Pass b_region, s_region and the previous polynomial to the function
+    # 2) Extract them from self.df_on_axis_raw and self.s_full within the function, then we need to pass field, der_order, start_idx, end_idx
+    # 3) Extract them from self.df_on_axis_raw and self.s_full within the function, but pass the sub_df already filtered for field, der_order and region
+    # Think optino 3 makes the most sense.
+    def _fit_single_poly(self, field, der_order, sub_df_this, sub_df_prev=None):
+        idx_left = int(sub_df_this.index.get_level_values('idx_start')[0])
+        idx_right = int(sub_df_this.index.get_level_values('idx_end')[0])
+        s_left = int(sub_df_this.index.get_level_values('s_start')[0])
+        s_right = int(sub_df_this.index.get_level_values('s_end')[0])
 
-        for ix, s in enumerate(slices_proc):
-            s_this, b_this = s_region[s], b_region[s]
-            integral_this = sc.integrate.trapezoid(b_this, s_this)
-            if ix == 0:
-                boundaries = self._boundary_from_sine(field, s_mid, der_order)
-            else:
-                boundaries = self._boundary_from_poly(prev_s, prev_poly)
+        s_region = self.s_full[idx_left:idx_right + 1]
+        b_region = self.df_on_axis_raw[(field, der_order)].values[idx_left:idx_right + 1]
+        integral = sc.integrate.trapezoid(b_region, s_region)
 
-            dbL = (-3 * b_this[0] + 4 * b_this[1] - b_this[2]) / (2 * self.ds)
-            coeffs = (b_this[0], dbL, boundaries[0], boundaries[2], integral_this)
-
-            x0 = float(s_this[0])
-            x1 = float(s_this[-1])
-            poly = self._poly(x0, x1, coeffs)
-            fit_reg[s] = poly(s_this)
-            pieces.append((s.start, poly))
-            prev_poly, prev_s = poly, s_this
-
-        # borders in strictly increasing s on this side
-        slices_ord = sorted(slices, key=lambda sl: sl.stop)
-        borders = [float(s_region[0])] + [float(s_region[sl.stop - 1]) for sl in slices_ord]
-        return fit_reg, pieces, borders
-
-
-    # Replace array-based edge fitter with DataFrame-driven version.
-    # Use self.df_on_axis_raw (index = s positions) and self.df_fit_pars (rows contain param_name/param_value, region info)
-    # Assign fitted values into self.df_on_axis_fit[(field, derivative)].
-    def _fit_edges(self):
-        import pandas as _pd
-
-        # prepare fields to process
-        if self.Bs_fit:
-            fields = ["Bx", "By", "Bs"]
+        if sub_df_prev is not None:
+            coeff_prev = sub_df_prev['param_value'].iloc[:].values
+            poly = self._poly(s_left, s_right, coeff_prev)
+            left_bounds = self._boundary_from_poly(s_left, poly)
         else:
-            fields = ["Bx", "By"]
+            left_bounds = self._booundary_from_finite_differences(b_region, right_side=True)
 
-        # make a safe copy / easier-to-query table of fit parameters
-        if getattr(self, "df_fit_pars", None) is None or self.df_fit_pars.empty:
-            return
+        right_bounds = self._booundary_from_finite_differences(b_region, right_side=False)
+        coeffs = (left_bounds[0], left_bounds[1], right_bounds[0], right_bounds[1], integral)
 
-        dfp = self.df_fit_pars.reset_index()
+        poly = self._poly(s_left, s_right, coeffs)
 
-        # helper: build regions (start idx and coefficients) for a given field & derivative
-        def _build_regions(field, der):
-            sel = dfp[(dfp["field_component"] == field) & (dfp["derivative_x"] == der)]
-            if sel.empty:
-                return []
+        # Assign coefficients into df_fit_pars
+        for i in range(self.poly_order + 1):
+            param_value = poly.convert().coef[i]  # get coefficient of s^i
+            self.df_fit_pars.at[(field, der_order, sub_df_this['region_name'].iloc[0], s_left, s_right, idx_left, idx_right, i), 'param_value'] = param_value
+            self.df_on_axis_fit[(field, der_order)].values[idx_left:idx_right + 1] = poly(s_region)
 
-            # group by region_name and pick up idx_start and param rows
-            regions = []
-            grouped = sel.groupby(["region_name", "idx_start", "s_start"])
-            for (rname, idx_start, s_start), g in grouped:
-                g_sorted = g.sort_values("param_index")
-                vals = g_sorted["param_value"].tolist()
-                # replace missing param_values with 0.0
-                coeffs = np.array([0.0 if (_pd.isna(v) or v is None) else float(v) for v in vals], dtype=float)
-                regions.append((int(idx_start), float(s_start), coeffs))
-            # sort by integer start index
-            regions.sort(key=lambda t: t[0])
-            return regions
 
-        # For each field and derivative, assemble and assign fitted polynomials into df_on_axis_fit
-        n_total = len(self.s_full)
+    # PRIVATE
+    def _fit_edges(self):
+        fields = ["Bx", "By"]
+        if self.Bs_fit:
+            fields.append("Bs")
+
         for field in fields:
             for der in range(0, self.deg + 1):
-                # skip if target column not present
-                if (field, der) not in self.df_on_axis_fit.columns:
-                    continue
+                sub_df = self.df_fit_pars.loc[(field, der)]
+                sub_df.reset_index(level='region_name', inplace=True)
+                n_regions = sub_df['region_name'].nunique()
 
-                regions = _build_regions(field, der)
-                if not regions:
-                    continue
+                for i in range(n_regions):
+                    sub_df_this = sub_df[sub_df['region_name'] == f"Poly_{i}"]
+                    if i == 0:
+                        sub_df_prev = None
+                    else:
+                        sub_df_prev = sub_df[sub_df['region_name'] == f"Poly_{i - 1}"]
 
-                for i, (start_idx, s_start, coeffs) in enumerate(regions):
-                    end_idx = regions[i + 1][0] if (i + 1) < len(regions) else n_total
-                    # guard
-                    if start_idx >= end_idx:
-                        continue
-                    s_region = self.s_full[start_idx:end_idx]
-                    if s_region.size == 0:
-                        continue
-                    x0 = float(s_region[0])
-                    x1 = float(s_region[-1])
-                    try:
-                        poly = self._poly(x0, x1, coeffs)
-                        values = poly(s_region)
-                    except Exception:
-                        # fallback: fill zeros on failure
-                        values = np.zeros_like(s_region, dtype=float)
-
-                    # assign into df_on_axis_fit by integer positions (iloc)
-                    try:
-                        # ensure we do not attempt to set with mismatched length
-                        self.df_on_axis_fit[(field, der)].iloc[start_idx:end_idx] = values
-                    except Exception:
-                        # fallback using index-based assignment (align by s values)
-                        idx_slice = self.df_on_axis_fit.index[start_idx:end_idx]
-                        self.df_on_axis_fit.loc[idx_slice, (field, der)] = values
-
-        # Optionally construct a simple poly_borders list from a reference field (used by later code)
-        # Prefer Bx, derivative 0 as reference if available
-        ref_regions = _build_regions("Bx", 0)
-        if ref_regions:
-            borders = [float(r[1]) for r in ref_regions]
-            # append final end
-            if borders[-1] != float(self.s_full[-1]):
-                borders.append(float(self.s_full[-1]))
-            self.poly_borders = borders
+                    self._fit_single_poly(field, der, sub_df_this, sub_df_prev)
 
     ####################################################################################################################
     # TRANSVERSE GRADIENTS
@@ -477,30 +433,48 @@ class WigglerFieldFitter:
     # PLOTTING
     ####################################################################################################################
 
-    @staticmethod
     def plot_integrated_fields(self):
+        if self.df_on_axis_raw is None or self.df_on_axis_fit is None:
+            raise RuntimeError("`df_on_axis_raw` and `df_on_axis_fit` must be set before plotting.")
+
+        s = self.s_full
+
+        Bx_raw = self.df_on_axis_raw[('Bx', 0)].to_numpy()
+        By_raw = self.df_on_axis_raw[('By', 0)].to_numpy()
+        try:
+            Bs_raw = self.df_on_axis_raw[('Bs', 0)].to_numpy()
+        except KeyError:
+            Bs_raw = np.zeros_like(Bx_raw)
+
+        Bx_fit = self.df_on_axis_fit[('Bx', 0)].to_numpy()
+        By_fit = self.df_on_axis_fit[('By', 0)].to_numpy()
+        try:
+            Bs_fit = self.df_on_axis_fit[('Bs', 0)].to_numpy()
+        except KeyError:
+            Bs_fit = np.zeros_like(Bx_fit)
+
         fig1, (ax1, ax2, ax3) = plt.subplots(3, figsize=(10, 4), constrained_layout=True)
 
-        Bx_int_raw = sc.integrate.cumulative_trapezoid(self.raw_data[0]["Bx"], dx=self.ds, initial=0)
-        By_int_raw = sc.integrate.cumulative_trapezoid(self.raw_data[0]["By"], dx=self.ds, initial=0)
-        Bs_int_raw = sc.integrate.cumulative_trapezoid(self.raw_data[0]["Bs"], dx=self.ds, initial=0)
+        Bx_int_raw = sc.integrate.cumulative_trapezoid(Bx_raw, x=s, initial=0)
+        By_int_raw = sc.integrate.cumulative_trapezoid(By_raw, x=s, initial=0)
+        Bs_int_raw = sc.integrate.cumulative_trapezoid(Bs_raw, x=s, initial=0)
 
-        Bx_int_fit = sc.integrate.cumulative_trapezoid(self.fit_data[0]["Bx"], dx=self.ds, initial=0)
-        By_int_fit = sc.integrate.cumulative_trapezoid(self.fit_data[0]["By"], dx=self.ds, initial=0)
-        Bs_int_fit = sc.integrate.cumulative_trapezoid(self.fit_data[0]["Bs"], dx=self.ds, initial=0)
+        Bx_int_fit = sc.integrate.cumulative_trapezoid(Bx_fit, x=s, initial=0)
+        By_int_fit = sc.integrate.cumulative_trapezoid(By_fit, x=s, initial=0)
+        Bs_int_fit = sc.integrate.cumulative_trapezoid(Bs_fit, x=s, initial=0)
 
-        ax1.plot(self.s_full, Bx_int_raw, label='Raw Data')
-        ax1.plot(self.s_full, Bx_int_fit, label='Fit', linestyle='--')
-        ax2.plot(self.s_full, By_int_raw, label='Raw Data')
-        ax2.plot(self.s_full, By_int_fit, label='Fit', linestyle='--')
-        ax3.plot(self.s_full, Bs_int_raw, label='Raw Data')
-        ax3.plot(self.s_full, Bs_int_fit, label='Fit', linestyle='--')
+        ax1.plot(s, Bx_int_raw, label='Raw Data')
+        ax1.plot(s, Bx_int_fit, label='Fit', linestyle='--')
+        ax2.plot(s, By_int_raw, label='Raw Data')
+        ax2.plot(s, By_int_fit, label='Fit', linestyle='--')
+        ax3.plot(s, Bs_int_raw, label='Raw Data')
+        ax3.plot(s, Bs_int_fit, label='Fit', linestyle='--')
 
-        # Add vertical lines at different positions for each subplot
-        for field in ["Bx", "By", "Bs"]:
-            for idx in self.borders_idx:
-                ax = {"Bx": ax1, "By": ax2, "Bs": ax3}[field]
-                ax.axvline(x=self.s_full[idx], color='k', linestyle='--', linewidth=1)
+        for field_ax in ["Bx", "By", "Bs"]:
+            ax = {"Bx": ax1, "By": ax2, "Bs": ax3}[field_ax]
+            for idx in getattr(self, "borders_idx", []):
+                if 0 <= idx < len(s):
+                    ax.axvline(x=s[idx], color='k', linestyle='--', linewidth=1)
 
         ax1.set_title(f"Integrated Magnetic Field at (X, Y) = {self.xy_point}")
         ax1.set_ylabel(r"Integrated Horizontal Field, $\int B_x \, ds$ [T·m]")
@@ -512,7 +486,6 @@ class WigglerFieldFitter:
         ax2.legend(loc="lower right")
         ax3.legend(loc="upper right")
 
-        # Turn on the grids.
         ax1.grid()
         ax2.grid()
         ax3.grid()
@@ -522,20 +495,32 @@ class WigglerFieldFitter:
     # PUBLIC
     # Plot the data against the fit.
     def plot_fields(self, der=0):
+        if self.df_on_axis_raw is None or self.df_on_axis_fit is None:
+            raise RuntimeError("`df_on_axis_raw` and `df_on_axis_fit` must be set before plotting.")
+
+        s = self.s_full
         fig1, (ax1, ax2, ax3) = plt.subplots(3, figsize=(10, 4), constrained_layout=True)
 
-        ax1.plot(self.s_full, self.raw_data[der]["Bx"])
-        ax1.plot(self.s_full, self.fit_data[der]["Bx"])
-        ax2.plot(self.s_full, self.raw_data[der]["By"])
-        ax2.plot(self.s_full, self.fit_data[der]["By"])
-        ax3.plot(self.s_full, self.raw_data[der]["Bs"])
-        ax3.plot(self.s_full, self.fit_data[der]["Bs"])
+        def get_series(df, field, der):
+            try:
+                return df[(field, der)].to_numpy()
+            except KeyError:
+                # fallback to zeros if Bs not present or derivative missing
+                ref = df.iloc[:, 0].to_numpy()
+                return np.zeros_like(ref)
 
-        # Add vertical lines at different positions for each subplot
-        for field in ["Bx", "By", "Bs"]:
-            for idx in self.borders_idx:
-                ax = {"Bx": ax1, "By": ax2, "Bs": ax3}[field]
-                ax.axvline(x=self.s_full[idx], color='k', linestyle='--', linewidth=1)
+        ax1.plot(s, get_series(self.df_on_axis_raw, "Bx", der), label='Raw Data')
+        ax1.plot(s, get_series(self.df_on_axis_fit, "Bx", der), label='Fit')
+        ax2.plot(s, get_series(self.df_on_axis_raw, "By", der), label='Raw Data')
+        ax2.plot(s, get_series(self.df_on_axis_fit, "By", der), label='Fit')
+        ax3.plot(s, get_series(self.df_on_axis_raw, "Bs", der), label='Raw Data')
+        ax3.plot(s, get_series(self.df_on_axis_fit, "Bs", der), label='Fit')
+
+        for field_ax in ["Bx", "By", "Bs"]:
+            ax = {"Bx": ax1, "By": ax2, "Bs": ax3}[field_ax]
+            for idx in getattr(self, "borders_idx", []):
+                if 0 <= idx < len(s):
+                    ax.axvline(x=s[idx], color='k', linestyle='--', linewidth=1)
 
         if der == 2:
             x_label = r"$\frac{d^2 B_x}{d x^2}$"
@@ -560,7 +545,6 @@ class WigglerFieldFitter:
         ax2.legend([f"{y_label} Data", f"{y_label} Fit"], loc="lower right")
         ax3.legend([f"{s_label} Data", f"{s_label} Fit"], loc="upper right")
 
-        # Turn on the grids.
         ax1.grid()
         ax2.grid()
         ax3.grid()

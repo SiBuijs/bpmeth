@@ -30,14 +30,9 @@ test_wiggler = WigglerFieldFitter(
                                     filter_params=None,
                             )
 
-#test_wiggler.set()
-test_wiggler._parse_to_dataframe()
-test_wiggler._set_derivative_df()
-#test_wiggler._set_df_fit_pars()
-test_wiggler._find_regions()
-with pd.option_context('display.max_columns', None, 'display.max_rows', None, 'display.width', None):
-    print(test_wiggler.df_fit_pars)
-test_wiggler._fit_sinusoids()
+test_wiggler.set()
+#with pd.option_context('display.max_columns', None, 'display.max_rows', None, 'display.width', None):
+    #print(test_wiggler.df_fit_pars)
 
 #print(sub)
 
