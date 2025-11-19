@@ -31,9 +31,9 @@ test_wiggler = WigglerFieldFitter(
                             )
 
 test_wiggler.set()
-#with pd.option_context('display.max_columns', None, 'display.max_rows', None, 'display.width', None):
-    #print(test_wiggler.df_fit_pars)
-
+with pd.option_context('display.max_columns', None, 'display.max_rows', None, 'display.width', None):
+    print(test_wiggler.df_fit_pars)
+test_wiggler.plot_fields()
 #print(sub)
 
 

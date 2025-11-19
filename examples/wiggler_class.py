@@ -139,7 +139,7 @@ class WigglerFieldFitter:
         )
         df.set_index(["X", "Y", "Z"], inplace=True)
         self.df_raw_data = df
-        self.s_full = np.sort(df.index.get_level_values("Z").unique()).astype(float)
+        self.s_full = np.sort(df.index.get_level_values("Z").unique()).astype(float) * self.ds
 
         # Check if Bs is much smaller than Bx and By
         self.df_on_axis_raw = self.df_raw_data.xs(self.xy_point, level=("X", "Y")).sort_index().copy(deep=True)
@@ -289,13 +289,13 @@ class WigglerFieldFitter:
         dp = poly.deriv()
         return np.array([poly(sL), dp(sL)], dtype=float)
 
-    def _booundary_from_finite_differences(self, b_region, right_side=False):
-        if right_side:
-            dbL = (-3 * b_region[0] + 4 * b_region[1] - b_region[2]) / (2 * self.ds)
-            return np.array([b_region[0], dbL], dtype=float)
-        else:
+    def _booundary_from_finite_differences(self, b_region, get_right_point=True):
+        if get_right_point:
             dbR = (3 * b_region[-1] - 4 * b_region[-2] + b_region[-3]) / (2 * self.ds)
             return np.array([b_region[-1], dbR], dtype=float)
+        else:
+            dbL = (-3 * b_region[0] + 4 * b_region[1] - b_region[2]) / (2 * self.ds)
+            return np.array([b_region[0], dbL], dtype=float)
 
     # To get a sub_df: sub_df = self.df_fit_pars.loc[
     #     (field, der_order)
@@ -326,21 +326,25 @@ class WigglerFieldFitter:
     def _fit_single_poly(self, field, der_order, sub_df_this, sub_df_prev=None):
         idx_left = int(sub_df_this.index.get_level_values('idx_start')[0])
         idx_right = int(sub_df_this.index.get_level_values('idx_end')[0])
-        s_left = int(sub_df_this.index.get_level_values('s_start')[0])
-        s_right = int(sub_df_this.index.get_level_values('s_end')[0])
+        s_left = float(sub_df_this.index.get_level_values('s_start')[0])
+        s_right = float(sub_df_this.index.get_level_values('s_end')[0])
 
         s_region = self.s_full[idx_left:idx_right + 1]
         b_region = self.df_on_axis_raw[(field, der_order)].values[idx_left:idx_right + 1]
         integral = sc.integrate.trapezoid(b_region, s_region)
 
+
+        print(s_left, s_right, s_region)
+        # TODO: Hypothesis: Left edge blows up, which causes the coefficients of the previous polynomial to become large.
+        # This causes the new polynomial to also blow up and so on.
         if sub_df_prev is not None:
             coeff_prev = sub_df_prev['param_value'].iloc[:].values
-            poly = self._poly(s_left, s_right, coeff_prev)
+            poly = np.polynomial.Polynomial(coeff_prev)
             left_bounds = self._boundary_from_poly(s_left, poly)
         else:
-            left_bounds = self._booundary_from_finite_differences(b_region, right_side=True)
+            left_bounds = self._booundary_from_finite_differences(b_region, get_right_point=False)
 
-        right_bounds = self._booundary_from_finite_differences(b_region, right_side=False)
+        right_bounds = self._booundary_from_finite_differences(b_region, get_right_point=True)
         coeffs = (left_bounds[0], left_bounds[1], right_bounds[0], right_bounds[1], integral)
 
         poly = self._poly(s_left, s_right, coeffs)
@@ -365,6 +369,7 @@ class WigglerFieldFitter:
                 n_regions = sub_df['region_name'].nunique()
 
                 for i in range(n_regions):
+                    print(f"Fitting {field}, derivative {der}, region {i}")
                     sub_df_this = sub_df[sub_df['region_name'] == f"Poly_{i}"]
                     if i == 0:
                         sub_df_prev = None
