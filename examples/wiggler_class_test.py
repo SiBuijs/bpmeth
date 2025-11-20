@@ -24,16 +24,15 @@ test_wiggler = WigglerFieldFitter(
                                     dx=0.001,
                                     dy=0.001,
                                     ds=0.001,
-                                    n_modes=6,
-                                    poly_pieces=200,
+                                    min_region_size=10,
                                     deg=2,
                                     filter_params=None,
                             )
 
 test_wiggler.set()
-with pd.option_context('display.max_columns', None, 'display.max_rows', None, 'display.width', None):
-    print(test_wiggler.df_fit_pars)
-test_wiggler.plot_fields()
+#with pd.option_context('display.max_columns', None, 'display.max_rows', None, 'display.width', None):
+#    print(test_wiggler.df_fit_pars)
+test_wiggler.plot_fields(der=2)
 #print(sub)
 
 

@@ -24,8 +24,7 @@ class WigglerFieldFitter:
             dx=0.001,
             dy=0.001,
             ds=0.001,
-            n_modes=6,
-            poly_pieces=200,
+            min_region_size=10,
             deg=0,
             filter_params=None,
     ):
@@ -34,6 +33,7 @@ class WigglerFieldFitter:
         self.xy_point = xy_point
         self.dx, self.dy, self.ds = dx, dy, ds
         self.poly_order = 4  # fixed at 4 for now (5 coefficients)
+        self.min_region_size = min_region_size
 
         # NOTE: Filter noise is now only used for the right tails, because those are noisy.
         # We can add a more general functionality later.
@@ -46,50 +46,17 @@ class WigglerFieldFitter:
         self.s_full = None
         self.length = None
         self.deg = deg
-        self.Bs_tol = 1e-3
-        self.Bs_fit = True
+        self.field_tol = 1e-3
 
     # PUBLIC
     # Setter method that calls all the other methods to arrive at a fit.
     def set(self):
         self._parse_to_dataframe()
-        self._set_derivative_df()
+        self._set_df_on_axis()
         self._find_regions()
         self._fit_edges()
 
-    # Naslagwerkje:
-    """
-    Use
-    pandas
-    indexing.Examples
-    for `self.df_fit_pars`:
-    
-    # Inspect structure first
-    print(self.df_fit_pars.columns)
-    print(self.df_fit_pars.index)
-    
-    # Single column by label
-    col = self.df_fit_pars['column_name']  # simple columns
-    # or
-    col = self.df_fit_pars.loc[:, 'column_name']
-    
-    # MultiIndex column (use a tuple)
-    col = self.df_fit_pars[('edge_L', 0, 'Bx')]
-    # or with .loc
-    col = self.df_fit_pars.loc[:, ('edge_L', 0, 'Bx')]
-    
-    # Slice with pd.IndexSlice for MultiIndex
-    import pandas as pd
-    idx = pd.IndexSlice
-    sub = self.df_fit_pars.loc[:, idx['edge_L', 0, :]]  # all fields at derivative 0 for edge_L
 
-    # Single row or single scalar
-    row = self.df_fit_pars.loc[row_label]
-    value = self.df_fit_pars.at[row_label, ('edge_L', 0, 'Bx')]
-    # by integer position
-    col_by_pos = self.df_fit_pars.iloc[:, 2]
-    val_by_pos = self.df_fit_pars.iat[3, 2]
-    """
 
     ####################################################################################################################
     # EVALUATION FUNCTIONS
@@ -125,7 +92,46 @@ class WigglerFieldFitter:
         poly_s = poly_t(t)
         return poly_s
 
+    """
+    Suggested changes (high level):
 
+    + Add a tolerance attribute, e.g. `self.field_tol = 1e-3` (replace or generalize `self.Bs_tol`).
+    --> Replaced self.Bs_tol with self.field_tol
+    --> Removed self.Bs_fit attribute, as the new logic applies to all fields/derivatives.
+    
+    - Ensure `df_fit_pars` rows carry a flag column (boolean) indicating whether that field/der will be fitted, e.g. add a `to_fit` column defaulting to `True`. Do this where `df_fit_pars` rows are created (the `_set_df_fit_pars` helper).
+    --> Added `to_fit` column in `_set_df_fit_pars`, defaulting to True.
+    
+    - After `df_fit_pars` has been populated (end of `_find_regions`, before you call `set_index`), compute per-(field,derivative) peak amplitudes from `self.df_on_axis_raw`:
+      - For each `(field, der)` present compute `max_abs = df_on_axis_raw[(field,der)].abs().max()`.
+      - Compute `global_max = max(all max_abs values)`.
+      - If `global_max == 0` handle as a special case (avoid division by zero).
+    
+    - Mark small channels:
+      - For any `(field,der)` where `max_abs < self.field_tol * global_max` set:
+        - `df_fit_pars.loc[ rows matching that field/der, 'to_fit'] = False`
+        - Zero the parameters in `df_fit_pars` for those rows (set parameter columns / stored coefficients to `0.0`) so they won’t contribute to the final model.
+        - Zero the corresponding fit output column: `self.df_on_axis_fit[(field,der)] = 0.0`.
+    
+    - Optionally also set `to_fit = False` when the corresponding `df_fit_pars` contains only a single region/piece (if you want single-segment combos to be skipped automatically). That logic can be combined with the amplitude threshold.
+    
+    - Make downstream code honor the flag:
+      - In the fitting routine(s) that iterate `df_fit_pars` skip rows/groups where `to_fit == False`.
+      - In any plotting or export code, treat `to_fit == False` as “no-fit” (keep zeros).
+    
+    Edge cases to handle:
+    - All channels near zero (global_max == 0) — avoid dividing by zero; probably mark everything `to_fit = False`.
+    - Missing derivatives or missing columns — skip safely.
+    - Preserve index/structure of `df_fit_pars` so existing code that expects its layout keeps working.
+    
+    Where to change:
+    - Add `self.field_tol` in `__init__`.
+    - Extend `_set_df_fit_pars` to add `to_fit=True` by default.
+    - Add the amplitude-check + masking + zeroing block at the end of `_find_regions` (before `self.df_fit_pars.set_index(...)`).
+    - Update the actual fit routines to check the `to_fit` flag and skip fitting when false.
+    
+    This keeps the decision centralized in `df_fit_pars` and makes downstream behavior simple: if `to_fit` is false that field/derivative is treated as zero and not fit.
+    """
 
     ####################################################################################################################
     # IDENTIFYING REGIONS AND SETTING BORDERS IN DATA CLASSES
@@ -133,7 +139,7 @@ class WigglerFieldFitter:
     # PRIVATE
     # This method reads the data from the file and stores it in a pandas DataFrame.
     # It also extracts the on-axis data and checks if Bs is negligible compared to Bx and By.
-    def _parse_to_dataframe(self) -> None:
+    def _parse_to_dataframe(self):
         df = pd.read_csv(
             self.file_path, sep=r"\s+", header=None, names=["X", "Y", "Z", "Bx", "By", "Bs"]
         )
@@ -142,29 +148,23 @@ class WigglerFieldFitter:
         self.s_full = np.sort(df.index.get_level_values("Z").unique()).astype(float) * self.ds
 
         # Check if Bs is much smaller than Bx and By
-        self.df_on_axis_raw = self.df_raw_data.xs(self.xy_point, level=("X", "Y")).sort_index().copy(deep=True)
-
-        # use the on-axis subset extracted from self.df_raw_data above
-        bs_vals = self.df_on_axis_raw["Bs"].abs().dropna()
-        bx_vals = self.df_on_axis_raw["Bx"].abs().dropna()
-        by_vals = self.df_on_axis_raw["By"].abs().dropna()
-
-        if len(bs_vals) and len(bx_vals) and len(by_vals):
-            bs_max = bs_vals.max()
-            denom = min(bx_vals.max(), by_vals.max())
-            if denom > 0 and (bs_max / denom) < self.Bs_tol:
-                self.Bs_fit = False
-
+        # Sets an additional index der = 0.
+        der = 0
+        df_on = self.df_raw_data.xs(self.xy_point, level=("X", "Y")).sort_index().copy(deep=True)
+        # convert columns to MultiIndex (field, derivative)
+        df_on.columns = pd.MultiIndex.from_tuples([(col, der) for col in df_on.columns])
+        self.df_on_axis_raw = df_on
 
 
     # PRIVATE
     # This method extracts on-axis data from the raw DataFrame and fits it to polynomials.
     # It computes the derivatives of said polynomials and stores them in the self.df_on_axis_raw DataFrame.
     # The data is not "raw" in the technical sense, but is used to fit a function of s to.
-    def _set_derivative_df(self):
+    def _set_df_on_axis(self):
         # 0th derivative columns
-        self.df_on_axis_raw.columns = pd.MultiIndex.from_product([self.df_on_axis_raw.columns, [0]])
-
+        self.df_on_axis_raw.columns = pd.MultiIndex.from_tuples([
+                    (col[0] if isinstance(col, tuple) else col, 0) for col in self.df_on_axis_raw.columns
+                ])
         # compute transverse derivatives for der > 0 and add as columns (skip Bs derivatives)
         for der in range(1, self.deg + 1):
             derivs = self._fit_transverse_polynomials(der=der)
@@ -183,50 +183,68 @@ class WigglerFieldFitter:
     # This method loops over all fields and derivatives.
     # It finds peaks and valleys in the data within the peak_window, with specified width and prominence.
     def _find_regions(self):
-        fields = ["Bx", "By"]
+        fields = ["Bx", "By", "Bs"]
+
+        abs_max = 0
+        for field in fields:
+            series = self.df_on_axis_raw[(field, 0)].values
+            field_max = np.max(np.abs(series))
+            if field_max > abs_max:
+                abs_max = field_max
 
         for field in fields:
-            for der in range(0, self.deg + 1):
+            # Bs only has der = 0; other fields range 0..deg
+            ders = [0] if field == "Bs" else range(0, self.deg + 1)
+
+            for der in ders:
                 series = self.df_on_axis_raw[(field, der)].values
 
-                # TODO: The filters in find_peaks are very useful for filtering noisy components in the data.
-                # TODO: Still check if this adequately picks up small (but real) features in the data.
-                # TODO: Chose width=15 and prominence=std_series as reasonable starting points.
-                # TODO: With these settings, it correctly reduces the first derivative to one piece only.
+                # SPLIT REGIONS AREA
+                # choose prominence: more permissive for Bs
                 std_series = np.std(series)
-                field_peaks = find_peaks(series, width=15, prominence=std_series)[0]
-                field_valleys = find_peaks(-series, width=15, prominence=std_series)[0]
+                prominence = 0.5 * std_series if field == "Bs" else std_series
+
+                field_peaks = find_peaks(series, width=15, prominence=prominence)[0]
+                field_valleys = find_peaks(-series, width=15, prominence=prominence)[0]
                 field_extrema = np.sort(np.concatenate((field_peaks, field_valleys)))
 
+                # include endpoints
                 field_extrema = np.insert(field_extrema, 0, 0)
                 field_extrema = np.append(field_extrema, len(series) - 1)
 
-                # Set region starts in df_fit_pars
-                n_pieces = len(field_extrema+1)  # number of pieces is number of extrema - 1
-                print(n_pieces)
-                self._set_df_fit_pars(der, n_pieces, field, field_extrema)
+                # split long regions while ensuring each part has at least `min_region_size` points
+                this_min_region_size = self.min_region_size if der == 0 else self.min_region_size // 2
+                new_extrema = [int(field_extrema[0])]
+                for left, right in zip(field_extrema[:-1], field_extrema[1:]):
+                    length = int(right - left)
+                    if length < 2 * this_min_region_size:
+                        new_extrema.append(int(right))
+                        continue
+                    n_parts = int(np.floor(length / this_min_region_size))
+                    if n_parts <= 1:
+                        new_extrema.append(int(right))
+                        continue
+                    splits = np.round(np.linspace(left, right, n_parts + 1)).astype(int)
+                    for sp in splits[1:]:
+                        if sp > new_extrema[-1]:
+                            new_extrema.append(int(sp))
 
-        # If Bs is to be fitted, do the same for Bs
-        if self.Bs_fit:
-            field = "Bs"
-            der = 0
-            series = self.df_raw_data[field].values
+                field_extrema = np.unique(np.asarray(new_extrema, dtype=int))
 
-            field_peaks = find_peaks(series)[0]
-            field_valleys = find_peaks(-series)[0]
-            field_peaks = field_peaks[np.logical_and(field_peaks > w_left, field_peaks < w_right)]
-            field_valleys = field_valleys[np.logical_and(field_valleys > w_left, field_valleys < w_right)]
-            field_extrema = np.sort(np.concatenate((field_peaks, field_valleys)))
+                # FIELD TOLERANCE AREA
+                field_der_max = np.max(np.abs(series))
+                if field_der_max < self.field_tol * abs_max:
+                    # set to single region with zero parameters
+                    field_extrema = np.array([0, len(series) - 1], dtype=int)
+                    to_fit = False
+                else:
+                    to_fit = True
 
-            field_extrema = np.insert(field_extrema, 0, 0)
-            field_extrema = np.append(field_extrema, len(series) - 1)
+                # number of pieces is number of extrema - 1 (ensure at least 1)
+                n_pieces = max(1, len(field_extrema) - 1)
+                print(f"{field} der={der} -> n_pieces={n_pieces}")
+                self._set_df_fit_pars(der, n_pieces, field, field_extrema, to_fit)
 
-            # Set region starts in df_fit_pars
-            n_pieces = len(field_extrema)  # number of pieces is number of extrema
-            self._set_df_fit_pars(der, n_pieces, field, field_extrema)
-
-        else:
-            self._set_df_fit_pars(0, 1, "Bs", [0])
 
         self.df_fit_pars.set_index(['field_component', 'derivative_x', 'region_name', 's_start', 's_end', 'idx_start', 'idx_end', 'param_index'],
                                        inplace=True)
@@ -239,7 +257,7 @@ class WigglerFieldFitter:
     # It stores metadata about the piece, including parameter names and initial values.
     # This method is called by _find_regions to populate the DataFrame.
     # In case the set consists of only one piece, the parameters are initialized to 0.
-    def _set_df_fit_pars(self, der_order, n_pieces, field, idx_extrema):
+    def _set_df_fit_pars(self, der_order, n_pieces, field, idx_extrema, to_fit=True):
         rows = []
         for i in range(n_pieces-1):
             if field == "Bx":
@@ -266,7 +284,8 @@ class WigglerFieldFitter:
                     "param_index": idx,
                     "param_name": name,
                     "param_symbol": sp.Symbol(name),
-                    "param_value": 0 if n_pieces == 1 else None,
+                    "param_value": 0 if not to_fit else None,
+                    "to_fit": to_fit,
                 })
 
         results = pd.DataFrame(rows)
@@ -333,8 +352,6 @@ class WigglerFieldFitter:
         b_region = self.df_on_axis_raw[(field, der_order)].values[idx_left:idx_right + 1]
         integral = sc.integrate.trapezoid(b_region, s_region)
 
-
-        print(s_left, s_right, s_region)
         # TODO: Hypothesis: Left edge blows up, which causes the coefficients of the previous polynomial to become large.
         # This causes the new polynomial to also blow up and so on.
         if sub_df_prev is not None:
@@ -369,7 +386,6 @@ class WigglerFieldFitter:
                 n_regions = sub_df['region_name'].nunique()
 
                 for i in range(n_regions):
-                    print(f"Fitting {field}, derivative {der}, region {i}")
                     sub_df_this = sub_df[sub_df['region_name'] == f"Poly_{i}"]
                     if i == 0:
                         sub_df_prev = None
@@ -438,6 +454,7 @@ class WigglerFieldFitter:
     # PLOTTING
     ####################################################################################################################
 
+
     def plot_integrated_fields(self):
         if self.df_on_axis_raw is None or self.df_on_axis_fit is None:
             raise RuntimeError("`df_on_axis_raw` and `df_on_axis_fit` must be set before plotting.")
@@ -475,9 +492,22 @@ class WigglerFieldFitter:
         ax3.plot(s, Bs_int_raw, label='Raw Data')
         ax3.plot(s, Bs_int_fit, label='Fit', linestyle='--')
 
+        # compute border indices from df_fit_pars (fall back to existing attribute if absent)
+        borders_idx = getattr(self, "borders_idx", None)
+        if getattr(self, "df_fit_pars", None) is not None:
+            try:
+                s_arr = np.asarray(s)
+                s_start_vals = np.asarray(self.df_fit_pars.index.get_level_values('s_start').astype(float))
+                s_end_vals = np.asarray(self.df_fit_pars.index.get_level_values('s_end').astype(float))
+                s_borders = np.unique(np.concatenate((s_start_vals, s_end_vals)))
+                # map borders to nearest indices in self.s_full
+                borders_idx = sorted({int(np.argmin(np.abs(s_arr - float(sb)))) for sb in s_borders})
+            except Exception:
+                borders_idx = getattr(self, "borders_idx", []) or []
+
         for field_ax in ["Bx", "By", "Bs"]:
             ax = {"Bx": ax1, "By": ax2, "Bs": ax3}[field_ax]
-            for idx in getattr(self, "borders_idx", []):
+            for idx in borders_idx or []:
                 if 0 <= idx < len(s):
                     ax.axvline(x=s[idx], color='k', linestyle='--', linewidth=1)
 
@@ -497,7 +527,7 @@ class WigglerFieldFitter:
 
         plt.show()
 
-    # PUBLIC
+   # PUBLIC
     # Plot the data against the fit.
     def plot_fields(self, der=0):
         if self.df_on_axis_raw is None or self.df_on_axis_fit is None:
@@ -521,9 +551,28 @@ class WigglerFieldFitter:
         ax3.plot(s, get_series(self.df_on_axis_raw, "Bs", der), label='Raw Data')
         ax3.plot(s, get_series(self.df_on_axis_fit, "Bs", der), label='Fit')
 
+        # compute border indices per field/derivative (fall back to existing attribute if absent)
+        def _borders_for_field(field_ax):
+            if getattr(self, "df_fit_pars", None) is None:
+                return getattr(self, "borders_idx", []) or []
+            try:
+                lvl_field = np.asarray(self.df_fit_pars.index.get_level_values('field_component'))
+                lvl_der = np.asarray(self.df_fit_pars.index.get_level_values('derivative_x')).astype(int)
+                mask = (lvl_field == field_ax) & (lvl_der == int(der))
+                if not np.any(mask):
+                    return []
+                s_start_vals = np.asarray(self.df_fit_pars.index.get_level_values('s_start'))[mask].astype(float)
+                s_end_vals = np.asarray(self.df_fit_pars.index.get_level_values('s_end'))[mask].astype(float)
+                s_borders = np.unique(np.concatenate((s_start_vals, s_end_vals)))
+                s_arr = np.asarray(s)
+                return sorted({int(np.argmin(np.abs(s_arr - float(sb)))) for sb in s_borders})
+            except Exception:
+                return getattr(self, "borders_idx", []) or []
+
         for field_ax in ["Bx", "By", "Bs"]:
             ax = {"Bx": ax1, "By": ax2, "Bs": ax3}[field_ax]
-            for idx in getattr(self, "borders_idx", []):
+            borders_idx_field = _borders_for_field(field_ax)
+            for idx in borders_idx_field or []:
                 if 0 <= idx < len(s):
                     ax.axvline(x=s[idx], color='k', linestyle='--', linewidth=1)
 
@@ -555,7 +604,6 @@ class WigglerFieldFitter:
         ax3.grid()
 
         plt.show()
-
 # This class takes the a_n, b_n and b_s coefficients from the WigglerFieldFitter
 # It generates the magnetic field functions using bpmeth's GeneralVectorPotential, which it stores as attributes
 # It is meant to only store one single segment
