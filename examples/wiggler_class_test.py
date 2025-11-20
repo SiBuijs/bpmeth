@@ -30,16 +30,12 @@ test_wiggler = WigglerFieldFitter(
                             )
 
 test_wiggler.set()
-#with pd.option_context('display.max_columns', None, 'display.max_rows', None, 'display.width', None):
-#    print(test_wiggler.df_fit_pars)
-test_wiggler.plot_fields(der=2)
-#print(sub)
+
+#for der in range(2):
+#    test_wiggler.plot_fields(der=der)
+#test_wiggler.plot_integrated_fields()
 
 
-#test_wiggler.plot_fields()
-prrrr
-#print(test_wiggler.fit_pars[0]['Bx']['edge_L'])
-#print(test_wiggler.fit_pars[0]['Bx']['sines'])
 
 test_wigglerfull = WigglerFull(test_wiggler)
 

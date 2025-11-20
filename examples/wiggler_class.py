@@ -5,6 +5,7 @@ import pandas as pd
 import scipy as sc
 import sympy as sp
 import xtrack as xt
+import math
 
 import bpmeth as bp
 import time
@@ -233,7 +234,8 @@ class WigglerFieldFitter:
 
                 # FIELD TOLERANCE AREA
                 field_der_max = np.max(np.abs(series))
-                if field_der_max < self.field_tol * abs_max:
+                relative_max = 1/math.factorial(der) * field_der_max * (self.dx ** der)
+                if relative_max < self.field_tol * abs_max:
                     # set to single region with zero parameters
                     field_extrema = np.array([0, len(series) - 1], dtype=int)
                     to_fit = False
@@ -249,6 +251,13 @@ class WigglerFieldFitter:
         self.df_fit_pars.set_index(['field_component', 'derivative_x', 'region_name', 's_start', 's_end', 'idx_start', 'idx_end', 'param_index'],
                                        inplace=True)
 
+        # ensure MultiIndex is lexsorted so partial-key .loc lookups (e.g. .loc[(field, der)]) are fast and avoid PerformanceWarning
+        if not self.df_fit_pars.empty:
+            self.df_fit_pars.sort_index(inplace=True)
+
+        #with pd.option_context('display.max_columns', None, 'display.max_rows', None, 'display.width', None):
+            #print(self.df_fit_pars)
+
 
 
     # PRIVATE
@@ -259,7 +268,7 @@ class WigglerFieldFitter:
     # In case the set consists of only one piece, the parameters are initialized to 0.
     def _set_df_fit_pars(self, der_order, n_pieces, field, idx_extrema, to_fit=True):
         rows = []
-        for i in range(n_pieces-1):
+        for i in range(n_pieces):
             if field == "Bx":
                 pars = [f"a_{der_order+1}_{k}" for k in range(self.poly_order + 1)]
             elif field == "By":
@@ -290,9 +299,6 @@ class WigglerFieldFitter:
 
         results = pd.DataFrame(rows)
         self.df_fit_pars = pd.concat([self.df_fit_pars, results])
-
-        #with pd.option_context('display.max_columns', None, 'display.width', None):
-        #    print(self.df_fit_pars)
 
 
 
@@ -352,8 +358,6 @@ class WigglerFieldFitter:
         b_region = self.df_on_axis_raw[(field, der_order)].values[idx_left:idx_right + 1]
         integral = sc.integrate.trapezoid(b_region, s_region)
 
-        # TODO: Hypothesis: Left edge blows up, which causes the coefficients of the previous polynomial to become large.
-        # This causes the new polynomial to also blow up and so on.
         if sub_df_prev is not None:
             coeff_prev = sub_df_prev['param_value'].iloc[:].values
             poly = np.polynomial.Polynomial(coeff_prev)
@@ -375,13 +379,18 @@ class WigglerFieldFitter:
 
     # PRIVATE
     def _fit_edges(self):
-        fields = ["Bx", "By"]
-        if self.Bs_fit:
-            fields.append("Bs")
 
-        for field in fields:
+        for field in ["Bx", "By", "Bs"]:
             for der in range(0, self.deg + 1):
+                if field == "Bs" and der > 0:
+                    continue
+
+                print(f"Fitting field {field} derivative {der}")
                 sub_df = self.df_fit_pars.loc[(field, der)]
+
+                if not sub_df['to_fit'].any():
+                    continue
+
                 sub_df.reset_index(level='region_name', inplace=True)
                 n_regions = sub_df['region_name'].nunique()
 
@@ -456,76 +465,59 @@ class WigglerFieldFitter:
 
 
     def plot_integrated_fields(self):
-        if self.df_on_axis_raw is None or self.df_on_axis_fit is None:
-            raise RuntimeError("`df_on_axis_raw` and `df_on_axis_fit` must be set before plotting.")
+            if self.df_on_axis_raw is None or self.df_on_axis_fit is None:
+                raise RuntimeError("`df_on_axis_raw` and `df_on_axis_fit` must be set before plotting.")
 
-        s = self.s_full
+            s = self.s_full
 
-        Bx_raw = self.df_on_axis_raw[('Bx', 0)].to_numpy()
-        By_raw = self.df_on_axis_raw[('By', 0)].to_numpy()
-        try:
-            Bs_raw = self.df_on_axis_raw[('Bs', 0)].to_numpy()
-        except KeyError:
-            Bs_raw = np.zeros_like(Bx_raw)
-
-        Bx_fit = self.df_on_axis_fit[('Bx', 0)].to_numpy()
-        By_fit = self.df_on_axis_fit[('By', 0)].to_numpy()
-        try:
-            Bs_fit = self.df_on_axis_fit[('Bs', 0)].to_numpy()
-        except KeyError:
-            Bs_fit = np.zeros_like(Bx_fit)
-
-        fig1, (ax1, ax2, ax3) = plt.subplots(3, figsize=(10, 4), constrained_layout=True)
-
-        Bx_int_raw = sc.integrate.cumulative_trapezoid(Bx_raw, x=s, initial=0)
-        By_int_raw = sc.integrate.cumulative_trapezoid(By_raw, x=s, initial=0)
-        Bs_int_raw = sc.integrate.cumulative_trapezoid(Bs_raw, x=s, initial=0)
-
-        Bx_int_fit = sc.integrate.cumulative_trapezoid(Bx_fit, x=s, initial=0)
-        By_int_fit = sc.integrate.cumulative_trapezoid(By_fit, x=s, initial=0)
-        Bs_int_fit = sc.integrate.cumulative_trapezoid(Bs_fit, x=s, initial=0)
-
-        ax1.plot(s, Bx_int_raw, label='Raw Data')
-        ax1.plot(s, Bx_int_fit, label='Fit', linestyle='--')
-        ax2.plot(s, By_int_raw, label='Raw Data')
-        ax2.plot(s, By_int_fit, label='Fit', linestyle='--')
-        ax3.plot(s, Bs_int_raw, label='Raw Data')
-        ax3.plot(s, Bs_int_fit, label='Fit', linestyle='--')
-
-        # compute border indices from df_fit_pars (fall back to existing attribute if absent)
-        borders_idx = getattr(self, "borders_idx", None)
-        if getattr(self, "df_fit_pars", None) is not None:
+            Bx_raw = self.df_on_axis_raw[('Bx', 0)].to_numpy()
+            By_raw = self.df_on_axis_raw[('By', 0)].to_numpy()
             try:
-                s_arr = np.asarray(s)
-                s_start_vals = np.asarray(self.df_fit_pars.index.get_level_values('s_start').astype(float))
-                s_end_vals = np.asarray(self.df_fit_pars.index.get_level_values('s_end').astype(float))
-                s_borders = np.unique(np.concatenate((s_start_vals, s_end_vals)))
-                # map borders to nearest indices in self.s_full
-                borders_idx = sorted({int(np.argmin(np.abs(s_arr - float(sb)))) for sb in s_borders})
-            except Exception:
-                borders_idx = getattr(self, "borders_idx", []) or []
+                Bs_raw = self.df_on_axis_raw[('Bs', 0)].to_numpy()
+            except KeyError:
+                Bs_raw = np.zeros_like(Bx_raw)
 
-        for field_ax in ["Bx", "By", "Bs"]:
-            ax = {"Bx": ax1, "By": ax2, "Bs": ax3}[field_ax]
-            for idx in borders_idx or []:
-                if 0 <= idx < len(s):
-                    ax.axvline(x=s[idx], color='k', linestyle='--', linewidth=1)
+            Bx_fit = self.df_on_axis_fit[('Bx', 0)].to_numpy()
+            By_fit = self.df_on_axis_fit[('By', 0)].to_numpy()
+            try:
+                Bs_fit = self.df_on_axis_fit[('Bs', 0)].to_numpy()
+            except KeyError:
+                Bs_fit = np.zeros_like(Bx_fit)
 
-        ax1.set_title(f"Integrated Magnetic Field at (X, Y) = {self.xy_point}")
-        ax1.set_ylabel(r"Integrated Horizontal Field, $\int B_x \, ds$ [T·m]")
-        ax2.set_ylabel(r"Integrated Vertical Field, $\int B_y \, ds$ [T·m]")
-        ax3.set_ylabel(r"Integrated Longitudinal Field, $\int B_s \, ds$ [T·m]")
-        ax3.set_xlabel(r"Longitudinal Position, $s$ [m]")
+            fig1, (ax1, ax2, ax3) = plt.subplots(3, figsize=(10, 4), constrained_layout=True)
 
-        ax1.legend(loc="lower right")
-        ax2.legend(loc="lower right")
-        ax3.legend(loc="upper right")
+            Bx_int_raw = sc.integrate.cumulative_trapezoid(Bx_raw, x=s, initial=0)
+            By_int_raw = sc.integrate.cumulative_trapezoid(By_raw, x=s, initial=0)
+            Bs_int_raw = sc.integrate.cumulative_trapezoid(Bs_raw, x=s, initial=0)
 
-        ax1.grid()
-        ax2.grid()
-        ax3.grid()
+            Bx_int_fit = sc.integrate.cumulative_trapezoid(Bx_fit, x=s, initial=0)
+            By_int_fit = sc.integrate.cumulative_trapezoid(By_fit, x=s, initial=0)
+            Bs_int_fit = sc.integrate.cumulative_trapezoid(Bs_fit, x=s, initial=0)
 
-        plt.show()
+            ax1.plot(s, Bx_int_raw, label='Raw Data')
+            ax1.plot(s, Bx_int_fit, label='Fit', linestyle='--')
+            ax2.plot(s, By_int_raw, label='Raw Data')
+            ax2.plot(s, By_int_fit, label='Fit', linestyle='--')
+            ax3.plot(s, Bs_int_raw, label='Raw Data')
+            ax3.plot(s, Bs_int_fit, label='Fit', linestyle='--')
+
+            # Vertical border lines removed
+
+            ax1.set_title(f"Integrated Magnetic Field at (X, Y) = {self.xy_point}")
+            ax1.set_ylabel(r"Integrated Horizontal Field, $\int B_x \, ds$ [T·m]")
+            ax2.set_ylabel(r"Integrated Vertical Field, $\int B_y \, ds$ [T·m]")
+            ax3.set_ylabel(r"Integrated Longitudinal Field, $\int B_s \, ds$ [T·m]")
+            ax3.set_xlabel(r"Longitudinal Position, $s$ [m]")
+
+            ax1.legend(loc="lower right")
+            ax2.legend(loc="lower right")
+            ax3.legend(loc="upper right")
+
+            ax1.grid()
+            ax2.grid()
+            ax3.grid()
+
+            plt.show()
 
    # PUBLIC
     # Plot the data against the fit.
@@ -545,11 +537,11 @@ class WigglerFieldFitter:
                 return np.zeros_like(ref)
 
         ax1.plot(s, get_series(self.df_on_axis_raw, "Bx", der), label='Raw Data')
-        ax1.plot(s, get_series(self.df_on_axis_fit, "Bx", der), label='Fit')
+        ax1.plot(s, get_series(self.df_on_axis_fit, "Bx", der), label='Fit', linestyle='--')
         ax2.plot(s, get_series(self.df_on_axis_raw, "By", der), label='Raw Data')
-        ax2.plot(s, get_series(self.df_on_axis_fit, "By", der), label='Fit')
+        ax2.plot(s, get_series(self.df_on_axis_fit, "By", der), label='Fit', linestyle='--')
         ax3.plot(s, get_series(self.df_on_axis_raw, "Bs", der), label='Raw Data')
-        ax3.plot(s, get_series(self.df_on_axis_fit, "Bs", der), label='Fit')
+        ax3.plot(s, get_series(self.df_on_axis_fit, "Bs", der), label='Fit', linestyle='--')
 
         # compute border indices per field/derivative (fall back to existing attribute if absent)
         def _borders_for_field(field_ax):
@@ -574,7 +566,7 @@ class WigglerFieldFitter:
             borders_idx_field = _borders_for_field(field_ax)
             for idx in borders_idx_field or []:
                 if 0 <= idx < len(s):
-                    ax.axvline(x=s[idx], color='k', linestyle='--', linewidth=1)
+                    ax.axvline(x=s[idx], color='k', linestyle='--', linewidth=1, alpha=0.3)
 
         if der == 2:
             x_label = r"$\frac{d^2 B_x}{d x^2}$"
