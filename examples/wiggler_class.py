@@ -52,7 +52,7 @@ class FieldFitter:
         self._parse_to_dataframe()
         self._set_df_on_axis()
         self._find_regions()
-        self._fit_edges()
+        self._fit_slices()
 
 
 
@@ -311,7 +311,7 @@ class FieldFitter:
 
     # PRIVATE
     # This method loops over all fields and derivatives and fits polynomials to each region.
-    def _fit_edges(self):
+    def _fit_slices(self):
 
         for field in ["Bx", "By", "Bs"]:
             for der in range(0, self.deg + 1):
@@ -518,7 +518,26 @@ class FieldFitter:
         plt.show()
 
 
-# TODO: Use this class in WigglerFull.
+# TODO: Investigate how lamdified functions work. Do they accept arguments based on name or something?
+# TODO: Build a good slice detector, that takes the correct magnetic field for each component depending on s0.
+# TODO: Look at difference between lambdify, or C-code generation.
+
+# LOGIC:
+# 1) We already have the symbolic and lambdified expressions.
+# 2) We extract the s_start and s_end for each segment from FieldFitter.df_fit_pars.
+# 3) We apply the mask to get all rows where s_start <= s < s_end.
+# 4) When looping, we must somehow remember the previous mask.
+# 5) If the new mask is the same as the previous one, we are in the same segment.
+#    We can reuse the previous coefficients, which we do using from functools import partial.
+# 6) If the new mask is different, we extract the new coefficients from df_fit_pars.
+#    We also create a partial function, which is used in the next iteration if the mask does not change again.
+
+# Workflow:
+# 1) A get_Bfield function, which receives an (x, y, s).
+# 2) Passes these to a slice or segment selector. This chooses the correct coefficients for each field component, depending on where the segment starts.
+#    This function returns a dict of the coefficients for each field component.
+# 3) These dicts are passed to the generic lamdified function, as well as the coordinates.
+# 4) The lamdified function returns the field components at that point.
 class SymbolicGenerator:
     def __init__(self, FieldFitter, curv=0):
         self.FieldFitter = FieldFitter
