@@ -12,8 +12,11 @@ import time
 from scipy.signal import find_peaks
 import matplotlib.pyplot as plt
 
+from sympy.utilities.codegen import codegen
 
-class WigglerFieldFitter:
+
+
+class FieldFitter:
 
     def __init__(
             self,
@@ -64,7 +67,7 @@ class WigglerFieldFitter:
     # c3 = f(s1)
     # c4 = f'(s1)
     # c5 = integral from s0 to s1 of f(s) ds
-    # TODO: Consider making this dynamic in poly order.
+    # TODO: Consider making this dynamic in self.poly_order.
     @staticmethod
     def _poly(s0, s1, coeffs):
         c1, c2, c3, c4, c5 = coeffs
@@ -87,6 +90,8 @@ class WigglerFieldFitter:
         poly_t = c1 * b1_poly + L * c2 * b2_poly + c3 * b3_poly + L * c4 * b4_poly + (c5 / L) * b5_poly
         poly_s = poly_t(t)
         return poly_s
+
+
 
     ####################################################################################################################
     # IDENTIFYING REGIONS AND SETTING BORDERS IN DATA CLASSES
@@ -331,6 +336,8 @@ class WigglerFieldFitter:
 
                     self._fit_single_poly(field, der, sub_df_this, sub_df_prev)
 
+
+
     ####################################################################################################################
     # TRANSVERSE GRADIENTS
     ####################################################################################################################
@@ -340,24 +347,6 @@ class WigglerFieldFitter:
     # This is done because bpmeth needs the derivatives w.r.t. x at each point.
     # The first derivatives are zero, but can be extracted nevertheless.
     def _fit_transverse_polynomials(self, der=0):
-        """
-        Fits transverse polynomials of arbitrary degree through specified points and returns the der-th derivative at x=0.
-
-        Parameters
-        ----------
-        points : list of int or float
-            The transverse x positions (in multiples of dx) to use for fitting.
-            Must have at least (degree + 1) entries.
-        degree : int
-            Degree of the polynomial to fit.
-        der : int
-            The order of the derivative to return (0 = value, 1 = first derivative, etc.)
-        Returns
-        -------
-        dict
-            Dictionary with keys "Bx", "By", "Bs" and values as arrays of the der-th derivative at x=0.
-        """
-
         idx = self.df_raw_data.index
         ys = idx.get_level_values("Y")
         xs = idx.get_level_values("X")
@@ -529,6 +518,69 @@ class WigglerFieldFitter:
         plt.show()
 
 
+# TODO: Use this class in WigglerFull.
+class SymbolicGenerator:
+    def __init__(self, FieldFitter, curv=0):
+        self.FieldFitter = FieldFitter
+        self.poly_order = FieldFitter.poly_order
+        self.deg = FieldFitter.deg
+        self.curv = curv
+
+        self.generic_exprs = {'A': {'x': None, 'y':None, 's':None}, 'B': {'x':None, 'y': None, 's': None }}
+        self.lamdified_exprs = {'A': {'x': None, 'y': None, 's': None}, 'B': {'x': None, 'y': None, 's': None}}
+
+        self._set_symbolic_exprs()
+        self._set_lamdified_exprs()
+
+    # PRIVATE
+    def _set_symbolic_exprs(self):
+        # create per-derivative polynomial coefficient symbols and expressions (degree 4 -> 5 terms)
+        a_poly_exprs_list = []
+        b_poly_exprs_list = []
+        s = sp.Symbol("s")
+
+        # TODO: Make this more robust by using the symbols in df_fit_pars
+        for d in range(1, self.deg + 2):
+            a_syms = sp.symbols(f"a_{d}_0:{self.poly_order + 1}")
+            b_syms = sp.symbols(f"b_{d}_0:{self.poly_order + 1}")
+
+            a_poly_exprs_list.append(sum(coef * s ** i for i, coef in enumerate(a_syms)))
+            b_poly_exprs_list.append(sum(coef * s ** i for i, coef in enumerate(b_syms)))
+
+        bs_symbols = sp.symbols(f"bs_0:{self.poly_order + 1}")
+        bs_poly_exprs_list = sum(coef * s ** i for i, coef in enumerate(bs_symbols))
+
+        self.a_poly_exprs = tuple(a_poly_exprs_list)
+        self.b_poly_exprs = tuple(b_poly_exprs_list)
+        self.bs_poly_exprs = (bs_poly_exprs_list)
+
+        a_poly_exprs_strings = tuple(f"{expr}" for expr in self.a_poly_exprs)
+        b_poly_exprs_strings = tuple(f"{expr}" for expr in self.b_poly_exprs)
+        bs_poly_exprs_string = f"{self.bs_poly_exprs}"
+        generic_poly_bpmeth = bp.GeneralVectorPotential(hs=f"{self.curv}", a=a_poly_exprs_strings,
+                                                        b=b_poly_exprs_strings, bs=bs_poly_exprs_string)
+        generic_poly_Bx, generic_poly_By, generic_poly_Bs = generic_poly_bpmeth.get_Bfield(lambdify=False)
+        generic_poly_Ax, generic_poly_Ay, generic_poly_As = generic_poly_bpmeth.get_A()
+
+        self.generic_exprs['A']['x'] = generic_poly_Ax
+        self.generic_exprs['A']['y'] = generic_poly_Ay
+        self.generic_exprs['A']['s'] = generic_poly_As
+        self.generic_exprs['B']['x'] = generic_poly_Bx
+        self.generic_exprs['B']['y'] = generic_poly_By
+        self.generic_exprs['B']['s'] = generic_poly_Bs
+
+    # PRIVATE
+    def _set_lamdified_exprs(self):
+        x, y, s = sp.symbols("x y s")
+
+        self.lamdified_exprs['A']['x'] = sp.lambdify((x, y, s), self.generic_exprs['A']['x'], modules='numpy')
+        self.lamdified_exprs['A']['y'] = sp.lambdify((x, y, s), self.generic_exprs['A']['y'], modules='numpy')
+        self.lamdified_exprs['A']['s'] = sp.lambdify((x, y, s), self.generic_exprs['A']['s'], modules='numpy')
+        self.lamdified_exprs['B']['x'] = sp.lambdify((x, y, s), self.generic_exprs['B']['x'], modules='numpy')
+        self.lamdified_exprs['B']['y'] = sp.lambdify((x, y, s), self.generic_exprs['B']['y'], modules='numpy')
+        self.lamdified_exprs['B']['s'] = sp.lambdify((x, y, s), self.generic_exprs['B']['s'], modules='numpy')
+
+
 
 class WigglerSegment:
     def __init__(self, s0=0, length=0, x0=0, y0=0):
@@ -571,6 +623,7 @@ class WigglerSegment:
                 self.scale * self.Asfun(x - self.x0, y - self.y0, s))
 
 
+
 class WigglerFull:
     def __init__(self, WigglerFieldFitter):
         self.field_fitter = WigglerFieldFitter
@@ -584,9 +637,6 @@ class WigglerFull:
         print(f"Generic Bx_poly(x, y, s) = {self.generic_poly_B[0]}")
         print(f"Generic By_poly(x, y, s) = {self.generic_poly_B[1]}")
         print(f"Generic Bs_poly(x, y, s) = {self.generic_poly_B[2]}")
-        print(f"Generic Bx_sine(x, y, s) = {self.generic_sine_B[0]}")
-        print(f"Generic By_sine(x, y, s) = {self.generic_sine_B[1]}")
-        print(f"Generic Bs_sine(x, y, s) = {self.generic_sine_B[2]}")
         self.set_segments()
 
     # PRIVATE
@@ -598,49 +648,13 @@ class WigglerFull:
     # - Similarly, b_j0, b_j1, ..., b_j4 are the coefficients for By
     # Also added bs expressions.
     def _set_generic_expr(self):
-        n_modes = self.field_fitter.n_modes
-        n_ders = self.field_fitter.deg
-        s = sp.symbols("s")
-        curv = 0
-
-        # symbols (mode m = 1..n_modes, derivative d = 1..n_ders+1)
-        Aa = {(m, d): sp.Symbol(f"Aa{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-        Ba = {(m, d): sp.Symbol(f"Ba{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-        ka = {(m, d): sp.Symbol(f"ka{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-
-        Ab = {(m, d): sp.Symbol(f"Ab{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-        Bb = {(m, d): sp.Symbol(f"Bb{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-        kb = {(m, d): sp.Symbol(f"kb{m}_{d}") for m in range(1, n_modes + 1) for d in range(1, n_ders + 2)}
-
-        As = {m: sp.Symbol(f"As{m}") for m in range(1, n_modes + 1)}
-        Bs = {m: sp.Symbol(f"Bs{m}") for m in range(1, n_modes + 1)}
-        ks = {m: sp.Symbol(f"ks{m}") for m in range(1, n_modes + 1)}
-
-        # DC per DERIVATIVE, not per mode
-        Aa_dc = {d: sp.Symbol(f"Aa_dc_{d}") for d in range(1, n_ders + 2)}
-        Ab_dc = {d: sp.Symbol(f"Ab_dc_{d}") for d in range(1, n_ders + 2)}
-        As_dc = sp.Symbol(f"As_dc")
-
-        # --- build expressions PER DERIVATIVE ---
-        self.a_sine_exprs = tuple(
-            Aa_dc[d] + sum(Aa[(m, d)] * sp.cos(ka[(m, d)] * s) + Ba[(m, d)] * sp.sin(ka[(m, d)] * s)
-                           for m in range(1, n_modes + 1))
-            for d in range(1, n_ders + 2)
-        )
-        self.b_sine_exprs = tuple(
-            Ab_dc[d] + sum(Ab[(m, d)] * sp.cos(kb[(m, d)] * s) + Bb[(m, d)] * sp.sin(kb[(m, d)] * s)
-                           for m in range(1, n_modes + 1))
-            for d in range(1, n_ders + 2)
-        )
-
-        self.bs_sine_exprs = (As_dc + sum(As[m] * sp.cos(ks[m] * s) + Bs[m] * sp.sin(ks[m] * s) for m in range(1, n_modes + 1)))
-
         deg_poly = 4
         # create per-derivative polynomial coefficient symbols and expressions (degree 4 -> 5 terms)
         a_p_syms = {}
         b_p_syms = {}
         a_poly_exprs_list = []
         b_poly_exprs_list = []
+        s = sp.Symbol("s")
 
         for j in range(1, n_ders + 2):
             a_syms = sp.symbols(f"a{j}_0:{deg_poly+1}")
@@ -655,18 +669,6 @@ class WigglerFull:
         self.a_poly_exprs = tuple(a_poly_exprs_list)
         self.b_poly_exprs = tuple(b_poly_exprs_list)
         self.bs_poly_exprs = (bs_poly_exprs_list)
-
-        # Changed GeneralVectorPotential to accept expressions with free parameters such as Ac_i, As_i, k_i.
-        # Pass the sympy expressions as strings (bpmeth/bp accepts string expressions)
-        # self.generic_sine_A = (Ax, Ay, As)
-        # self.generic_sine_B = (Bx, By, Bs)
-        # Likewise for generic_poly_A and generic_poly_B
-        a_sine_exprs_strings = tuple(f"{expr}" for expr in self.a_sine_exprs)
-        b_sine_exprs_strings = tuple(f"{expr}" for expr in self.b_sine_exprs)
-        bs_sine_exprs_string = f"{self.bs_sine_exprs}"
-        generic_sine_bpmeth = bp.GeneralVectorPotential(hs=f"{curv}", a=a_sine_exprs_strings, b=b_sine_exprs_strings, bs=bs_sine_exprs_string)
-        self.generic_sine_B = generic_sine_bpmeth.get_Bfield(lambdify=False)
-        self.generic_sine_A = generic_sine_bpmeth.get_A()
 
         a_poly_exprs_strings = tuple(f"{expr}" for expr in self.a_poly_exprs)
         b_poly_exprs_strings = tuple(f"{expr}" for expr in self.b_poly_exprs)
