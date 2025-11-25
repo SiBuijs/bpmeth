@@ -40,3 +40,12 @@ print(f"Symbolic As : {symbolic_wiggler.symbolic_As}")
 print(f"Symbolic Bx : {symbolic_wiggler.symbolic_Bx}")
 print(f"Symbolic By : {symbolic_wiggler.symbolic_By}")
 print(f"Symbolic Bs : {symbolic_wiggler.symbolic_Bs}")
+
+field_calculator = FieldCalculator(symbolic_wiggler, test_wiggler.df_fit_pars)
+
+field_calculator.plot_B_field(x=0.001, y=0.001)
+
+iter = 1000
+
+for _ in range(iter):
+    B_field = field_calculator.get_Bfield(x=0.001, y=0.001, s=0.5)

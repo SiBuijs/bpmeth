@@ -6,6 +6,7 @@ import scipy as sc
 import sympy as sp
 import xtrack as xt
 import math
+from functools import partial
 
 import bpmeth as bp
 import time
@@ -634,8 +635,10 @@ class FieldCalculator:
     def __init__(self, SymbolicGenerator, df_fit_pars):
         self.symbolic_generator = SymbolicGenerator
         self.df = self._rework_dataframe(df_fit_pars)
-        # self.s_start = self.df['s_start'].to_numpy()
-        # self.s_end = self.df['s_end'].to_numpy()
+        self.s_start = self.df['s_start'].to_numpy()
+        self.s_end = self.df['s_end'].to_numpy()
+        self.s_boundaries = np.unique(np.concatenate((self.s_start, self.s_end)))
+        self.s_mid = (self.s_boundaries[:-1] + self.s_boundaries[1:]) / 2
 
         self._np_par_cache = {
             "s_start": self.df["s_start"].to_numpy(),
@@ -643,6 +646,15 @@ class FieldCalculator:
             "param_name": self.df["param_name"].to_numpy(),
             "param_value": self.df["param_value"].to_numpy(),
         }
+
+        # Dataframe for clarity. We actually will use lists of partial functions for speed.
+        self.region_df = self._build_region_df()
+        self.Bx_region_funcs = self.region_df["Bx_func"].to_list()
+        self.By_region_funcs = self.region_df["By_func"].to_list()
+        self.Bs_region_funcs = self.region_df["Bs_func"].to_list()
+        self.Ax_region_funcs = self.region_df["Ax_func"].to_list()
+        self.Ay_region_funcs = self.region_df["Ay_func"].to_list()
+        self.As_region_funcs = self.region_df["As_func"].to_list()
 
         if any([self.symbolic_generator.lambdified_Ax is None,
                 self.symbolic_generator.lambdified_Ay is None,
@@ -669,20 +681,27 @@ class FieldCalculator:
         df.set_index(['field_component', 'derivative_x', 'region_name'], inplace=True)
         return df
 
-    # # PRIVATE
-    # # This method extracts the parameter values for a given s_val from the dataframe.
-    # # For s_val outside the range, the returned dict will be empty.
-    # @profile
-    # def _get_par_dict(self, s_val):
-    #     # --- simple boolean mask (returns all rows where s_start <= s_value <= s_end) ---
-    #     #print(f"s_start type: {type(s_start)}, s_end type: {type(s_end)}, s_val type: {type(s_val)}")
-    #     mask = (self.s_start <= s_val) & (self.s_end >= s_val)
-    #
-    #     df_masked = self.df.loc[mask]
-    #
-    #     param_dict = df_masked.set_index("param_name")["param_value"].to_dict()
-    #
-    #     return param_dict
+    def _build_region_df(self):
+        regions = []
+        for i in range(len(self.s_boundaries) - 1):
+            par_dict = self._get_par_dict(self.s_mid[i])
+            Bx_region, By_region, Bs_region = partial(self.symbolic_generator.lambdified_Bx, **par_dict), \
+                                              partial(self.symbolic_generator.lambdified_By, **par_dict), \
+                                              partial(self.symbolic_generator.lambdified_Bs, **par_dict)
+            Ax_region, Ay_region, As_region = partial(self.symbolic_generator.lambdified_Ax, **par_dict), \
+                                              partial(self.symbolic_generator.lambdified_Ay, **par_dict), \
+                                              partial(self.symbolic_generator.lambdified_As, **par_dict)
+            regions.append({
+                "s_start": self.s_boundaries[i],
+                "Bx_func": Bx_region,
+                "By_func": By_region,
+                "Bs_func": Bs_region,
+                "Ax_func": Ax_region,
+                "Ay_func": Ay_region,
+                "As_func": As_region,
+            })
+        region_df = pd.DataFrame(regions)
+        return region_df
 
     @profile
     def _get_par_dict(self, s_val):
@@ -690,35 +709,81 @@ class FieldCalculator:
         s_start = cache["s_start"]
         s_end = cache["s_end"]
 
-        # boolean mask using numpy (much cheaper than pandas boolean indexing + set_index)
-        mask = (s_start <= s_val) & (s_end >= s_val)
+        # locate region quickly using precomputed boundaries
+        sb = self.s_boundaries
+        idx = np.searchsorted(sb, s_val, side='right') - 1
+
+        sL = sb[idx]
+        sR = sb[idx + 1]
+
+        # mask parameters whose interval contains s_val (strict interior). allow tiny tolerance for fp noise
+        tol = 1e-12
+        mask = (s_start < (s_val - tol)) & (s_end > (s_val + tol))
+        # fallback to exact-boundary match if nothing found (handles edge cases)
+        if not np.any(mask):
+            mask = np.isclose(s_start, sL) & np.isclose(s_end, sR)
 
         names = cache["param_name"][mask]
         vals = cache["param_value"][mask]
-        # build dict from numpy slices
+        #print(f"Selected parameters for s={s_val}: {dict(zip(names, vals))}")
         return dict(zip(names, vals))
 
-    # TODO: Currently, _get_par_dict dominates the time taken by this call: ~97%.
-    # TODO: The calls of self.symbolic_generator.lambdified_Bx/By/Bs are small, but still ~10 us, so need to become quicker too.
+    @profile
+    def _select_region(self, s_val):
+        sb = self.s_boundaries
+        idx = np.searchsorted(sb, s_val, side='right') - 1
+        return idx
+
     @profile
     def get_Bfield(self, x, y, s):
-        par_dict = self._get_par_dict(s)
+        # Prefer pre-built region functions if available
+        idx = self._select_region(s)
+        print(f"Using region index {idx} for s={s}")
 
-        Bx = self.symbolic_generator.lambdified_Bx(x, y, s, **par_dict)
-        By = self.symbolic_generator.lambdified_By(x, y, s, **par_dict)
-        Bs = self.symbolic_generator.lambdified_Bs(x, y, s, **par_dict)
+        Bx = self.Bx_region_funcs[idx](x, y, s)
+        By = self.By_region_funcs[idx](x, y, s)
+        Bs = self.Bs_region_funcs[idx](x, y, s)
 
         return Bx, By, Bs
 
     def get_vector_potential(self, x, y, s):
-        par_dict = self._get_par_dict(s)
+        # Prefer pre-built region functions if available
+        idx = self._select_region(s)
 
-        Ax = self.symbolic_generator.lambdified_Ax(x, y, s, **par_dict)
-        Ay = self.symbolic_generator.lambdified_Ay(x, y, s, **par_dict)
-        As = self.symbolic_generator.lambdified_As(x, y, s, **par_dict)
+        Ax = self.Bx_region_funcs[idx](x, y, s)
+        Ay = self.By_region_funcs[idx](x, y, s)
+        As = self.Bs_region_funcs[idx](x, y, s)
 
         return Ax, Ay, As
 
+    # PUBLIC
+    # Plot the B field along s at a given (x, y) point.
+    # Seems to function as desired and the plotted data seems correct.
+    def plot_B_field(self, x=0, y=0, n_points=2000, plot_data=False):
+        s_min = self.s_boundaries[0]
+        s_max = self.s_boundaries[-2]
+        s_vals = np.linspace(s_min, s_max, n_points)
+
+        Bx_vals = np.zeros(n_points)
+        By_vals = np.zeros(n_points)
+        Bs_vals = np.zeros(n_points)
+
+        for i, s in enumerate(s_vals):
+            Bx, By, Bs = self.get_Bfield(x, y, s)
+            Bx_vals[i] = Bx
+            By_vals[i] = By
+            Bs_vals[i] = Bs
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(s_vals, Bx_vals, label='Bx')
+        plt.plot(s_vals, By_vals, label='By')
+        plt.plot(s_vals, Bs_vals, label='Bs')
+        plt.xlabel('s [m]')
+        plt.ylabel('Magnetic Field [T]')
+        plt.title(f'Magnetic Field at (x={x}, y={y})')
+        plt.legend()
+        plt.grid()
+        plt.show()
 
 # class WigglerSegment:
 #     def __init__(self, s0=0, length=0, x0=0, y0=0):
