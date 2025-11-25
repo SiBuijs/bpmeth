@@ -544,9 +544,23 @@ class SymbolicGenerator:
         self.poly_order = FieldFitter.poly_order
         self.deg = FieldFitter.deg
         self.curv = curv
+        self.param_symbols = None
 
-        self.generic_exprs = {'A': {'x': None, 'y':None, 's':None}, 'B': {'x':None, 'y': None, 's': None }}
-        self.lamdified_exprs = {'A': {'x': None, 'y': None, 's': None}, 'B': {'x': None, 'y': None, 's': None}}
+        # Symbolic expressions
+        self.symbolic_Ax = None
+        self.symbolic_Ay = None
+        self.symbolic_As = None
+        self.symbolic_Bx = None
+        self.symbolic_By = None
+        self.symbolic_Bs = None
+
+        # Lambdified expressions
+        self.lambdified_Ax = None
+        self.lambdified_Ay = None
+        self.lambdified_As = None
+        self.lambdified_Bx = None
+        self.lambdified_By = None
+        self.lambdified_Bs = None
 
         self._set_symbolic_exprs()
         self._set_lamdified_exprs()
@@ -569,545 +583,650 @@ class SymbolicGenerator:
         bs_symbols = sp.symbols(f"bs_0:{self.poly_order + 1}")
         bs_poly_exprs_list = sum(coef * s ** i for i, coef in enumerate(bs_symbols))
 
-        self.a_poly_exprs = tuple(a_poly_exprs_list)
-        self.b_poly_exprs = tuple(b_poly_exprs_list)
-        self.bs_poly_exprs = (bs_poly_exprs_list)
+        a_poly_exprs = tuple(a_poly_exprs_list)
+        b_poly_exprs = tuple(b_poly_exprs_list)
+        bs_poly_expr = bs_poly_exprs_list
 
-        a_poly_exprs_strings = tuple(f"{expr}" for expr in self.a_poly_exprs)
-        b_poly_exprs_strings = tuple(f"{expr}" for expr in self.b_poly_exprs)
-        bs_poly_exprs_string = f"{self.bs_poly_exprs}"
+        a_poly_exprs_strings = tuple(f"{expr}" for expr in a_poly_exprs)
+        b_poly_exprs_strings = tuple(f"{expr}" for expr in b_poly_exprs)
+        bs_poly_exprs_string = f"{bs_poly_expr}"
         generic_poly_bpmeth = bp.GeneralVectorPotential(hs=f"{self.curv}", a=a_poly_exprs_strings,
                                                         b=b_poly_exprs_strings, bs=bs_poly_exprs_string)
-        generic_poly_Bx, generic_poly_By, generic_poly_Bs = generic_poly_bpmeth.get_Bfield(lambdify=False)
-        generic_poly_Ax, generic_poly_Ay, generic_poly_As = generic_poly_bpmeth.get_A()
-
-        self.generic_exprs['A']['x'] = generic_poly_Ax
-        self.generic_exprs['A']['y'] = generic_poly_Ay
-        self.generic_exprs['A']['s'] = generic_poly_As
-        self.generic_exprs['B']['x'] = generic_poly_Bx
-        self.generic_exprs['B']['y'] = generic_poly_By
-        self.generic_exprs['B']['s'] = generic_poly_Bs
+        self.symbolic_Bx, self.symbolic_By, self.symbolic_Bs = generic_poly_bpmeth.get_Bfield(lambdify=False)
+        self.symbolic_Ax, self.symbolic_Ay, self.symbolic_As = generic_poly_bpmeth.get_A()
 
     # PRIVATE
     def _set_lamdified_exprs(self):
         x, y, s = sp.symbols("x y s")
+        # Get the symbols from FieldFitter.df_fit_pars to ensure correct ordering.
+        # df_fit_pars stores sympy.Symbol objects under the column "param_symbol".
+        par_syms = []
+        all_symbols = list(self.FieldFitter.df_fit_pars["param_symbol"].to_list())
+        seen = set()
+        for sym in all_symbols:
+            name = str(sym)
+            if name not in seen:
+                seen.add(name)
+                par_syms.append(sym)
+        # store as tuple for later use when lambdifying and building par_dict
+        self.param_symbols = tuple(par_syms)
+        # prepare a mapping of default values (string keys) from param_value if available
 
-        self.lamdified_exprs['A']['x'] = sp.lambdify((x, y, s), self.generic_exprs['A']['x'], modules='numpy')
-        self.lamdified_exprs['A']['y'] = sp.lambdify((x, y, s), self.generic_exprs['A']['y'], modules='numpy')
-        self.lamdified_exprs['A']['s'] = sp.lambdify((x, y, s), self.generic_exprs['A']['s'], modules='numpy')
-        self.lamdified_exprs['B']['x'] = sp.lambdify((x, y, s), self.generic_exprs['B']['x'], modules='numpy')
-        self.lamdified_exprs['B']['y'] = sp.lambdify((x, y, s), self.generic_exprs['B']['y'], modules='numpy')
-        self.lamdified_exprs['B']['s'] = sp.lambdify((x, y, s), self.generic_exprs['B']['s'], modules='numpy')
+        if any([self.lambdified_Ax is None,
+                self.lambdified_Ay is None,
+                self.lambdified_As is None,
+                self.lambdified_Bx is None,
+                self.lambdified_By is None,
+                self.lambdified_Bs is None]):
+            self._set_symbolic_exprs()
 
-
-
-class WigglerSegment:
-    def __init__(self, s0=0, length=0, x0=0, y0=0):
-        self.s0 = s0
-        self.length = length
-        self.x0 = x0
-        self.y0 = y0
-        self.scale = 1.0
-
-        self.a_expr = None
-        self.b_expr = None
-        self.bs_expr= None
-        self.a_fun  = None
-        self.b_fun  = None
-        self.bs_fun = None
-
-        self.Bxexpr = None
-        self.Byexpr = None
-        self.Bsexpr = None
-        self.Bxfun  = None
-        self.Byfun  = None
-        self.Bsfun  = None
-
-        self.Axexpr = None
-        self.Ayexpr = None
-        self.Asexpr = None
-        self.Axfun  = None
-        self.Ayfun  = None
-        self.Asfun  = None
-
-    def get_field(self, x, y, s):
-        return (self.scale * self.Bxfun(x - self.x0, y - self.y0, s),
-                self.scale * self.Byfun(x - self.x0, y - self.y0, s),
-                self.scale * self.Bsfun(x - self.x0, y - self.y0, s))
-
-    # Order of arguments: (x, y, s). Vectorized.
-    def get_vector_potential(self, x, y, s):
-        return (self.scale * self.Axfun(x - self.x0, y - self.y0, s),
-                self.scale * self.Ayfun(x - self.x0, y - self.y0, s),
-                self.scale * self.Asfun(x - self.x0, y - self.y0, s))
+        coords_and_params = (x, y, s) + self.param_symbols
+        self.lambdified_Ax = sp.lambdify(coords_and_params, self.symbolic_Ax, modules='numpy')
+        self.lambdified_Ay = sp.lambdify(coords_and_params, self.symbolic_Ay, modules='numpy')
+        self.lambdified_As = sp.lambdify(coords_and_params, self.symbolic_As, modules='numpy')
+        self.lambdified_Bx = sp.lambdify(coords_and_params, self.symbolic_Bx, modules='numpy')
+        self.lambdified_By = sp.lambdify(coords_and_params, self.symbolic_By, modules='numpy')
+        self.lambdified_Bs = sp.lambdify(coords_and_params, self.symbolic_Bs, modules='numpy')
 
 
 
-class WigglerFull:
-    def __init__(self, WigglerFieldFitter):
-        self.field_fitter = WigglerFieldFitter
-        self.segments = []
-        self.integrator = []
-        self.n_slices = 0
-        self.env = None
-        self.wiggler_line = None
+class FieldCalculator:
+    def __init__(self, SymbolicGenerator, df_fit_pars):
+        self.symbolic_generator = SymbolicGenerator
+        self.df = self._rework_dataframe(df_fit_pars)
+        # self.s_start = self.df['s_start'].to_numpy()
+        # self.s_end = self.df['s_end'].to_numpy()
 
-        self._set_generic_expr()
-        print(f"Generic Bx_poly(x, y, s) = {self.generic_poly_B[0]}")
-        print(f"Generic By_poly(x, y, s) = {self.generic_poly_B[1]}")
-        print(f"Generic Bs_poly(x, y, s) = {self.generic_poly_B[2]}")
-        self.set_segments()
+        self._np_par_cache = {
+            "s_start": self.df["s_start"].to_numpy(),
+            "s_end": self.df["s_end"].to_numpy(),
+            "param_name": self.df["param_name"].to_numpy(),
+            "param_value": self.df["param_value"].to_numpy(),
+        }
 
-    # PRIVATE
-    # This function defines generic symbolic expressions for the vector potential and magnetic field
-    # - For the sines: Aa_ij corresponds to the i-th mode of the j-th derivative of Bx, cosine amplitude
-    # - Similarly, Ba_ij is the sine amplitude, ka_ji is the wave number
-    # - Ba_ij, Bb_ij, kb_ij are the corresponding parameters for By
-    # - For the polynomials: a_j0, a_j1, ..., a_j4 are the coefficients of the j-th derivative of Bx
-    # - Similarly, b_j0, b_j1, ..., b_j4 are the coefficients for By
-    # Also added bs expressions.
-    def _set_generic_expr(self):
-        deg_poly = 4
-        # create per-derivative polynomial coefficient symbols and expressions (degree 4 -> 5 terms)
-        a_p_syms = {}
-        b_p_syms = {}
-        a_poly_exprs_list = []
-        b_poly_exprs_list = []
-        s = sp.Symbol("s")
+        if any([self.symbolic_generator.lambdified_Ax is None,
+                self.symbolic_generator.lambdified_Ay is None,
+                self.symbolic_generator.lambdified_As is None,
+                self.symbolic_generator.lambdified_Bx is None,
+                self.symbolic_generator.lambdified_By is None,
+                self.symbolic_generator.lambdified_Bs is None]):
+            self.symbolic_generator._set_lamdified_exprs()
 
-        for j in range(1, n_ders + 2):
-            a_syms = sp.symbols(f"a{j}_0:{deg_poly+1}")
-            b_syms = sp.symbols(f"b{j}_0:{deg_poly+1}")
-            a_p_syms[j] = a_syms
-            b_p_syms[j] = b_syms
-            a_poly_exprs_list.append(sum(coef * s**i for i, coef in enumerate(a_syms)))
-            b_poly_exprs_list.append(sum(coef * s**i for i, coef in enumerate(b_syms)))
-        bs_symbols = sp.symbols(f"bs_0:{deg_poly+1}")
-        bs_poly_exprs_list = sum(coef * s**i for i, coef in enumerate(bs_symbols))
+    def show_functions(self):
+        import inspect
+        print(f"Lambdified Bx(x, y, s) = {inspect.getsource(self.symbolic_generator.lambdified_Bx)}")
+        print(f"Lambdified By(x, y, s) = {inspect.getsource(self.symbolic_generator.lambdified_By)}")
+        print(f"Lambdified Bs(x, y, s) = {inspect.getsource(self.symbolic_generator.lambdified_Bs)}")
+        print(f"Lambdified Ax(x, y, s) = {inspect.getsource(self.symbolic_generator.lambdified_Ax)}")
+        print(f"Lambdified Ay(x, y, s) = {inspect.getsource(self.symbolic_generator.lambdified_Ay)}")
+        print(f"Lambdified As(x, y, s) = {inspect.getsource(self.symbolic_generator.lambdified_As)}")
 
-        self.a_poly_exprs = tuple(a_poly_exprs_list)
-        self.b_poly_exprs = tuple(b_poly_exprs_list)
-        self.bs_poly_exprs = (bs_poly_exprs_list)
+    @staticmethod
+    def _rework_dataframe(df_fit_pars):
+        # reset index to make s_start and s_end columns
+        df = df_fit_pars.reset_index()
+        # create a MultiIndex with field_component, derivative_x, region_name
+        df.set_index(['field_component', 'derivative_x', 'region_name'], inplace=True)
+        return df
 
-        a_poly_exprs_strings = tuple(f"{expr}" for expr in self.a_poly_exprs)
-        b_poly_exprs_strings = tuple(f"{expr}" for expr in self.b_poly_exprs)
-        bs_poly_exprs_string = f"{self.bs_poly_exprs}"
-        generic_poly_bpmeth = bp.GeneralVectorPotential(hs=f"{curv}", a=a_poly_exprs_strings, b=b_poly_exprs_strings, bs=bs_poly_exprs_string)
-        self.generic_poly_B = generic_poly_bpmeth.get_Bfield(lambdify=False)
-        self.generic_poly_A = generic_poly_bpmeth.get_A()
+    # # PRIVATE
+    # # This method extracts the parameter values for a given s_val from the dataframe.
+    # # For s_val outside the range, the returned dict will be empty.
+    # @profile
+    # def _get_par_dict(self, s_val):
+    #     # --- simple boolean mask (returns all rows where s_start <= s_value <= s_end) ---
+    #     #print(f"s_start type: {type(s_start)}, s_end type: {type(s_end)}, s_val type: {type(s_val)}")
+    #     mask = (self.s_start <= s_val) & (self.s_end >= s_val)
+    #
+    #     df_masked = self.df.loc[mask]
+    #
+    #     param_dict = df_masked.set_index("param_name")["param_value"].to_dict()
+    #
+    #     return param_dict
 
-    def _extract_edge_fit_params(self, fit_type="edge_L"):
-        pieces_all = self.field_fitter.fit_pars[fit_type]
-        #print(f"Extracting {fit_type} fit parameters: {pieces_all}")
-        base_map = {"Bx": "a", "By": "b", "Bs": "bs"}
-        combined_pieces = []  # store as list of dicts, index = piece index
+    @profile
+    def _get_par_dict(self, s_val):
+        cache = self._np_par_cache
+        s_start = cache["s_start"]
+        s_end = cache["s_end"]
 
-        for der_order, fields_dict in pieces_all.items():
-            d = int(der_order) + 1  # e.g. 0 -> a1_, 1 -> a2_, ...
-            for field, pieces in fields_dict.items():
-                base = base_map[field]
+        # boolean mask using numpy (much cheaper than pandas boolean indexing + set_index)
+        mask = (s_start <= s_val) & (s_end >= s_val)
 
-                for p_idx, piece in enumerate(pieces):
-                    # ensure the list is large enough
-                    while len(combined_pieces) <= p_idx:
-                        combined_pieces.append({})
+        names = cache["param_name"][mask]
+        vals = cache["param_value"][mask]
+        # build dict from numpy slices
+        return dict(zip(names, vals))
 
-                    # Normalize coefficients
-                    if isinstance(piece, dict):
-                        coef_arr = np.array(list(piece.values()), dtype=float)
-                    elif hasattr(piece, "coef"):
-                        coef_arr = np.asarray(piece.coef)
-                    elif isinstance(piece, (list, tuple, np.ndarray)):
-                        coef_arr = np.asarray(piece)
-                    else:
-                        coef_arr = np.asarray([piece])
+    # TODO: Currently, _get_par_dict dominates the time taken by this call: ~97%.
+    # TODO: The calls of self.symbolic_generator.lambdified_Bx/By/Bs are small, but still ~10 us, so need to become quicker too.
+    @profile
+    def get_Bfield(self, x, y, s):
+        par_dict = self._get_par_dict(s)
 
-                    coef_arr = coef_arr.ravel()
-
-                    # Add coefficients for this derivative order and field
-                    if field == "Bs":
-                        for power, val in enumerate(coef_arr):
-                            name = f"{base}_{power}"
-                            combined_pieces[p_idx][sp.Symbol(name)] = float(val)
-                    else:
-                        for power, val in enumerate(coef_arr):
-                            name = f"{base}{d}_{power}"
-                            combined_pieces[p_idx][sp.Symbol(name)] = float(val)
-
-        if fit_type == "edge_L":
-            combined_pieces.reverse()  # left edge pieces need to be reversed
-
-        return combined_pieces
-
-    def _extract_sine_fit_params(self):
-        fit_pars_all = self.field_fitter.fit_pars["sines"]
-        n_modes = int(self.field_fitter.n_modes)
-        combined_pieces = {}
-        piece_idx = 0  # sines usually represent a single continuous region
-
-        for der_order, fields_dict in fit_pars_all.items():
-            d = int(der_order) + 1
-            for field, sine_params in fields_dict.items():
-
-                # Determine correct prefix mapping and whether names are per-derivative
-                if field == "Bx":
-                    pref_A, pref_B, pref_k = "Aa", "Ba", "ka"
-                    dc_sym = sp.symbols(f"Aa_dc_{d}")
-                    per_derivative = True
-                elif field == "By":
-                    pref_A, pref_B, pref_k = "Ab", "Bb", "kb"
-                    dc_sym = sp.symbols(f"Ab_dc_{d}")
-                    per_derivative = True
-                else:  # "Bs" (longitudinal sines are not per-derivative)
-                    pref_A, pref_B, pref_k = "As", "Bs", "ks"
-                    dc_sym = sp.symbols("As_dc")
-                    per_derivative = False
-
-                if piece_idx not in combined_pieces:
-                    combined_pieces[piece_idx] = {}
-
-                # Loop over modes and assign amplitudes / wavenumbers
-                for m in range(n_modes):
-                    i = 3 * m
-                    if i < len(sine_params):
-                        name = f"{pref_A}{m + 1}_{d}" if per_derivative else f"{pref_A}{m + 1}"
-                        combined_pieces[piece_idx][sp.symbols(name)] = float(sine_params[i])
-                    if i + 1 < len(sine_params):
-                        name = f"{pref_B}{m + 1}_{d}" if per_derivative else f"{pref_B}{m + 1}"
-                        combined_pieces[piece_idx][sp.symbols(name)] = float(sine_params[i + 1])
-                    if i + 2 < len(sine_params):
-                        name = f"{pref_k}{m + 1}_{d}" if per_derivative else f"{pref_k}{m + 1}"
-                        combined_pieces[piece_idx][sp.symbols(name)] = float(sine_params[i + 2])
-
-                # If there’s a trailing DC term (mod 3 == 1)
-                if (len(sine_params) % 3) == 1:
-                    combined_pieces[piece_idx][dc_sym] = float(sine_params[-1])
-
-        return [combined_pieces[idx] for idx in sorted(combined_pieces.keys())]
-
-    def _extract_fit_params(self, fit_type="edge_L"):
-        if fit_type in ("edge_L", "edge_R"):
-            return self._extract_edge_fit_params(fit_type)
-        elif fit_type == "sines":
-            return self._extract_sine_fit_params()
-        else:
-            return []
-
-    def set_segments(self):
-
-        seg = []
-        # determine fields (kept for selecting a reference for borders/shapes)
-        fields = ["Bx", "By", "Bs"]
-
-        # Use the first field as reference for shapes / poly_borders (parameters are global and substituted once per segment)
-        poly_borders = self.field_fitter.poly_borders
-        nL = self.field_fitter.n_pieces_L
-        nR = self.field_fitter.n_pieces_R
-
-        # ===================== LEFT EDGE =====================
-        left_pieces = self._extract_fit_params(fit_type="edge_L")
-        s_borders_L = poly_borders[: nL + 1]
-        print(f"s_borders_L = {s_borders_L}")
-
-        for i, params in enumerate(left_pieces):
-            if i + 1 >= len(s_borders_L):
-                break
-            s0 = s_borders_L[i]
-            length = s_borders_L[i + 1] - s_borders_L[i]
-            segment = WigglerSegment(s0=s0, length=length)
-
-            # Substitute parameters into generic expressions once for this segment
-            exprs_B  = list(self.generic_poly_B)
-            exprs_A  = list(self.generic_poly_A)
-            exprs_a  = list(self.a_poly_exprs)
-            exprs_b  = list(self.b_poly_exprs)
-            exprs_bs = self.bs_poly_exprs
-
-            segment.Bxexpr, segment.Byexpr, segment.Bsexpr = [expr.subs(params) for expr in exprs_B]
-            segment.Axexpr, segment.Ayexpr, segment.Asexpr = [expr.subs(params) for expr in exprs_A]
-            segment.a_expr = [exprs_a[j].subs(params) for j in range(len(exprs_a))]
-            segment.b_expr = [exprs_b[j].subs(params) for j in range(len(exprs_b))]
-            segment.bs_expr = [exprs_bs.subs(params)]
-
-            for comp in ["Bx", "By", "Bs", "Ax", "Ay", "As"]:
-                expr = getattr(segment, f"{comp}expr")
-                setattr(segment, f"{comp}fun", sp.lambdify(("x", "y", "s"), expr, modules="numpy"))
-
-            seg.append(segment)
-
-        # ===================== CENTER REGION (SINES) =====================
-        sine_pieces = self._extract_fit_params(fit_type="sines")
-        i0, i1 = nL, nL + 1
-        s_borders_center = poly_borders[i0 : i1 + 1]
-        print(f"s_borders_center = {s_borders_center}")
-
-        if len(sine_pieces) > 0 and len(s_borders_center) >= 2:
-            for i, params in enumerate(sine_pieces):
-                s0 = s_borders_center[i]
-                length = s_borders_center[i + 1] - s_borders_center[i]
-                segment = WigglerSegment(s0=s0, length=length)
-
-                exprs_B = list(self.generic_sine_B)
-                exprs_A = list(self.generic_sine_A)
-                exprs_a = list(self.a_sine_exprs)
-                exprs_b = list(self.b_sine_exprs)
-                exprs_bs = self.bs_sine_exprs
-
-                segment.Bxexpr, segment.Byexpr, segment.Bsexpr = [expr.subs(params) for expr in exprs_B]
-                segment.Axexpr, segment.Ayexpr, segment.Asexpr = [expr.subs(params) for expr in exprs_A]
-                segment.a_expr = [exprs_a[j].subs(params) for j in range(len(exprs_a))]
-                segment.b_expr = [exprs_b[j].subs(params) for j in range(len(exprs_b))]
-                segment.bs_expr = [exprs_bs.subs(params)]
-
-                for comp in ["Bx", "By", "Bs", "Ax", "Ay", "As"]:
-                    expr = getattr(segment, f"{comp}expr")
-                    setattr(segment, f"{comp}fun", sp.lambdify(("x", "y", "s"), expr, modules="numpy"))
-
-                seg.append(segment)
-
-        # ===================== RIGHT EDGE =====================
-        right_pieces = self._extract_fit_params(fit_type="edge_R")
-        s_borders_R = poly_borders[-nR - 1 :]
-        print(f"s_borders_R = {s_borders_R}")
-
-        for i, params in enumerate(right_pieces):
-            if i + 1 >= len(s_borders_R):
-                break
-            s0 = s_borders_R[i]
-            length = s_borders_R[i + 1] - s_borders_R[i]
-            segment = WigglerSegment(s0=s0, length=length)
-
-            exprs_B = list(self.generic_poly_B)
-            exprs_A = list(self.generic_poly_A)
-            exprs_a = list(self.a_poly_exprs)
-            exprs_b = list(self.b_poly_exprs)
-            exprs_bs = self.bs_poly_exprs
-
-            segment.Bxexpr, segment.Byexpr, segment.Bsexpr = [expr.subs(params) for expr in exprs_B]
-            segment.Axexpr, segment.Ayexpr, segment.Asexpr = [expr.subs(params) for expr in exprs_A]
-            segment.a_expr = [exprs_a[j].subs(params) for j in range(len(exprs_a))]
-            segment.b_expr = [exprs_b[j].subs(params) for j in range(len(exprs_b))]
-            segment.bs_expr = [exprs_bs.subs(params)]
-
-            for comp in ["Bx", "By", "Bs", "Ax", "Ay", "As"]:
-                expr = getattr(segment, f"{comp}expr")
-                setattr(segment, f"{comp}fun", sp.lambdify(("x", "y", "s"), expr, modules="numpy"))
-
-            seg.append(segment)
-
-        # Store all field segments
-        self.segments = seg
-
-    def seg_selector(self, s):
-        # Scalar path: return single segment
-        if np.isscalar(s):
-            seg = None
-            for seg_candidate in self.segments:
-                s0 = seg_candidate.s0
-                s1 = s0 + seg_candidate.length
-                if s0 <= s <= s1:
-                    seg = seg_candidate
-                    break
-            if seg is None:
-                seg = self.segments[-1]
-            return seg
-
-        # Array path: return array of indices (one index per s)
-        s_arr = np.asarray(s)
-        idxs = np.full(s_arr.shape, len(self.segments) - 1, dtype=int)  # default last segment (clamp)
-        for i, seg_candidate in enumerate(self.segments):
-            s0 = seg_candidate.s0
-            s1 = s0 + seg_candidate.length
-            mask = (s_arr >= s0) & (s_arr <= s1)
-            idxs[mask] = i
-        return idxs
-
-    def get_field(self, x, y, s):
-
-        # Scalar s -> keep existing behavior
-        if np.isscalar(s):
-            seg = self.seg_selector(s)
-            return seg.get_field(x, y, s)
-
-        # Vectorized s -> build outputs by grouping by segment
-        s_arr = np.asarray(s)
-        idxs = self.seg_selector(s_arr)  # array of indices
-
-        Bx = np.empty_like(s_arr, dtype=float)
-        By = np.empty_like(s_arr, dtype=float)
-        Bs = np.empty_like(s_arr, dtype=float)
-
-        for i, seg in enumerate(self.segments):
-            mask = idxs == i
-            if not np.any(mask):
-                continue
-            s_sub = s_arr[mask]
-            bx_sub, by_sub, bs_sub = seg.get_field(x, y, s_sub)
-            Bx[mask] = bx_sub
-            By[mask] = by_sub
-            Bs[mask] = bs_sub
+        Bx = self.symbolic_generator.lambdified_Bx(x, y, s, **par_dict)
+        By = self.symbolic_generator.lambdified_By(x, y, s, **par_dict)
+        Bs = self.symbolic_generator.lambdified_Bs(x, y, s, **par_dict)
 
         return Bx, By, Bs
 
     def get_vector_potential(self, x, y, s):
-        import numpy as _np
+        par_dict = self._get_par_dict(s)
 
-        if _np.isscalar(s):
-            seg = self.seg_selector(s)
-            return seg.get_vector_potential(x, y, s)
-
-        s_arr = _np.asarray(s)
-        idxs = self.seg_selector(s_arr)
-
-        Ax = _np.empty_like(s_arr, dtype=float)
-        Ay = _np.empty_like(s_arr, dtype=float)
-        As = _np.empty_like(s_arr, dtype=float)
-
-        for i, seg in enumerate(self.segments):
-            mask = idxs == i
-            if not _np.any(mask):
-                continue
-            s_sub = s_arr[mask]
-            ax_sub, ay_sub, as_sub = seg.get_vector_potential(x, y, s_sub)
-            Ax[mask] = ax_sub
-            Ay[mask] = ay_sub
-            As[mask] = as_sub
+        Ax = self.symbolic_generator.lambdified_Ax(x, y, s, **par_dict)
+        Ay = self.symbolic_generator.lambdified_Ay(x, y, s, **par_dict)
+        As = self.symbolic_generator.lambdified_As(x, y, s, **par_dict)
 
         return Ax, Ay, As
 
-    def plot_field(self, s_ends=(None,None), x0=0.0, y0=0.0, n_points=2000, plot_data=False):
-        if s_ends == (None, None):
-            s_start = self.field_fitter.s_full[0]
-            s_end   = self.field_fitter.s_full[-1]
-        else:
-            s_start, s_end = s_ends
 
-        s_vals = np.linspace(s_start, s_end, n_points)
-        # If plot_data is true, then it tries to extract the corresponding data from field_fitter.
-        # If that data is not available (because x0 and y0 are not in the dataframe index), then it skips plotting the data.
-        if plot_data:
-            x_int = int(x0 * 1000)
-            y_int = int(y0 * 1000)
-            import warnings
-            # verify (X,Y) exists in the dataframe index
-            try:
-                self.field_fitter.df_raw_data.xs((x_int, y_int), level=["X", "Y"])
-            except KeyError:
-                xy_pairs = sorted(set(zip(self.field_fitter.df_raw_data.index.get_level_values("X"),
-                                          self.field_fitter.df_raw_data.index.get_level_values("Y"))))
-                warnings.warn(
-                    f"Requested (X,Y)=({x_int},{y_int}) not found in `self.field_fitter.df`. "
-                    f"Skipping data overlay. Available (X,Y) pairs (first 10 shown): {xy_pairs[:10]}"
-                )
-                plot_data = False
-            else:
-                self.field_fitter.xy_point = (x_int, y_int)
-                s_full = self.field_fitter.s_full
-                Bx_data = self.field_fitter.raw_data[0]["Bx"]
-                By_data = self.field_fitter.raw_data[0]["By"]
-                Bs_data = self.field_fitter.raw_data[0]["Bs"]
+# class WigglerSegment:
+#     def __init__(self, s0=0, length=0, x0=0, y0=0):
+#         self.s0 = s0
+#         self.length = length
+#         self.x0 = x0
+#         self.y0 = y0
+#         self.scale = 1.0
+#
+#         self.a_expr = None
+#         self.b_expr = None
+#         self.bs_expr= None
+#         self.a_fun  = None
+#         self.b_fun  = None
+#         self.bs_fun = None
+#
+#         self.Bxexpr = None
+#         self.Byexpr = None
+#         self.Bsexpr = None
+#         self.Bxfun  = None
+#         self.Byfun  = None
+#         self.Bsfun  = None
+#
+#         self.Axexpr = None
+#         self.Ayexpr = None
+#         self.Asexpr = None
+#         self.Axfun  = None
+#         self.Ayfun  = None
+#         self.Asfun  = None
+#
+#     def get_field(self, x, y, s):
+#         return (self.scale * self.Bxfun(x - self.x0, y - self.y0, s),
+#                 self.scale * self.Byfun(x - self.x0, y - self.y0, s),
+#                 self.scale * self.Bsfun(x - self.x0, y - self.y0, s))
+#
+#     # Order of arguments: (x, y, s). Vectorized.
+#     def get_vector_potential(self, x, y, s):
+#         return (self.scale * self.Axfun(x - self.x0, y - self.y0, s),
+#                 self.scale * self.Ayfun(x - self.x0, y - self.y0, s),
+#                 self.scale * self.Asfun(x - self.x0, y - self.y0, s))
 
-        Bx_vals, By_vals, Bs_vals = self.get_field(x0, y0, s_vals)
 
-        plt.figure(figsize=(10, 6))
-        plt.plot(s_vals, Bx_vals, label='Bx')
-        plt.plot(s_vals, By_vals, label='By')
-        plt.plot(s_vals, Bs_vals, label='Bs')
 
-        if plot_data:
-            plt.scatter(s_full, Bx_data, label='Bx Data', color='C0', s=5, alpha=0.5)
-            plt.scatter(s_full, By_data, label='By Data', color='C1', s=5, alpha=0.5)
-            plt.scatter(s_full, Bs_data, label='Bs Data', color='C2', s=5, alpha=0.5)
-
-        plt.xlabel('s [m]')
-        plt.ylabel('Magnetic Field [T]')
-        plt.title(f'Magnetic Field along Wiggler at (x={x0}, y={y0})')
-        plt.legend()
-        plt.grid()
-        plt.show()
-
-    def set_integrator(self, n_slices=1000, n_steps = 1000):
-        if self.segments == []:
-            self.set_segments()
-
-        self.n_slices = n_slices
-        l_wig = self.field_fitter.length
-        s_start = self.field_fitter.s_full[0]
-        s_end   = self.field_fitter.s_full[-1]
-
-        s_cuts = np.linspace(s_start, s_end, n_slices + 1)
-        #s_mid = 0.5 * (s_cuts[:-1] + s_cuts[1:])
-        for ii in range(n_slices):
-            wig = xt.BorisSpatialIntegrator(fieldmap_callable=self.get_field, s_start=s_cuts[ii], s_end=s_cuts[ii + 1],
-                                            n_steps=np.round(n_steps / n_slices).astype(int),
-                                            verbose=True)
-            self.integrator.append(wig)
-
-    def get_line(self):
-        if self.integrator == []:
-            self.set_integrator()
-
-        self.env = xt.Environment()
-
-        for ii in range(self.n_slices):
-            self.env.elements[f'wigslice_{ii}'] = self.integrator[ii]
-        self.wiggler_line = self.env.new_line(components=['wigslice_' + str(ii) for ii in range(self.n_slices)])
-        return self.wiggler_line
-
-    def correctors(self, particle_ref):
-        start_time = time.time()
-        if self.wiggler_line is None:
-            self.get_line()
-
-        self.wiggler_line.particle_ref = particle_ref
-
-        self.env['k0l_corr1'] = 0.
-        self.env['k0l_corr2'] = 0.
-        self.env['k0l_corr3'] = 0.
-        self.env['k0l_corr4'] = 0.
-        self.env['k0sl_corr1'] = 0.
-        self.env['k0sl_corr2'] = 0.
-        self.env['k0sl_corr3'] = 0.
-        self.env['k0sl_corr4'] = 0.
-        self.env['on_wig_corr'] = 1.0
-
-        self.env.new('corr1', xt.Multipole, knl=['on_wig_corr * k0l_corr1'], ksl=['on_wig_corr * k0sl_corr1'])
-        self.env.new('corr2', xt.Multipole, knl=['on_wig_corr * k0l_corr2'], ksl=['on_wig_corr * k0sl_corr2'])
-        self.env.new('corr3', xt.Multipole, knl=['on_wig_corr * k0l_corr3'], ksl=['on_wig_corr * k0sl_corr3'])
-        self.env.new('corr4', xt.Multipole, knl=['on_wig_corr * k0l_corr4'], ksl=['on_wig_corr * k0sl_corr4'])
-
-        l_wig = self.field_fitter.length
-
-        self.wiggler_line.insert([
-            self.env.place('corr1', at=0.02),
-            self.env.place('corr2', at=0.1),
-            self.env.place('corr3', at=l_wig - 0.1),
-            self.env.place('corr4', at=l_wig - 0.02),
-        ], s_tol=5e-3
-        )
-
-        # To compute the kicks
-        opt = self.wiggler_line.match(
-            solve=False,
-            betx=0, bety=0,
-            only_orbit=True,
-            include_collective=True,
-            vary=xt.VaryList(['k0l_corr1', 'k0sl_corr1',
-                              'k0l_corr2', 'k0sl_corr2',
-                              'k0l_corr3', 'k0sl_corr3',
-                              'k0l_corr4', 'k0sl_corr4',
-                              ], step=1e-6),
-            targets=[
-                xt.TargetSet(x=0, px=0, y=0, py=0., at=xt.END),
-                xt.TargetSet(x=0., y=0, at='wigslice_167'),
-                xt.TargetSet(x=0., y=0, at='wigslice_833')
-                ],
-        )
-        opt.step(2)
-        end_time = time.time()
-        print(f"Wiggler correctors set in {end_time - start_time:.2f} seconds.")
-        print("Corrector strengths [T]:")
-        print(f"  k0l_corr1 = {self.env['k0l_corr1']:.6e}, k0sl_corr1 = {self.env['k0sl_corr1']:.6e}")
-        print(f"  k0l_corr2 = {self.env['k0l_corr2']:.6e}, k0sl_corr2 = {self.env['k0sl_corr2']:.6e}")
-        print(f"  k0l_corr3 = {self.env['k0l_corr3']:.6e}, k0sl_corr3 = {self.env['k0sl_corr3']:.6e}")
-        print(f"  k0l_corr4 = {self.env['k0l_corr4']:.6e}, k0sl_corr4 = {self.env['k0sl_corr4']:.6e}")
+# class WigglerFull:
+#     def __init__(self, WigglerFieldFitter):
+#         self.field_fitter = WigglerFieldFitter
+#         self.segments = []
+#         self.integrator = []
+#         self.n_slices = 0
+#         self.env = None
+#         self.wiggler_line = None
+#
+#         self._set_generic_expr()
+#         print(f"Generic Bx_poly(x, y, s) = {self.generic_poly_B[0]}")
+#         print(f"Generic By_poly(x, y, s) = {self.generic_poly_B[1]}")
+#         print(f"Generic Bs_poly(x, y, s) = {self.generic_poly_B[2]}")
+#         self.set_segments()
+#
+#     # PRIVATE
+#     # This function defines generic symbolic expressions for the vector potential and magnetic field
+#     # - For the sines: Aa_ij corresponds to the i-th mode of the j-th derivative of Bx, cosine amplitude
+#     # - Similarly, Ba_ij is the sine amplitude, ka_ji is the wave number
+#     # - Ba_ij, Bb_ij, kb_ij are the corresponding parameters for By
+#     # - For the polynomials: a_j0, a_j1, ..., a_j4 are the coefficients of the j-th derivative of Bx
+#     # - Similarly, b_j0, b_j1, ..., b_j4 are the coefficients for By
+#     # Also added bs expressions.
+#     def _set_generic_expr(self):
+#         deg_poly = 4
+#         # create per-derivative polynomial coefficient symbols and expressions (degree 4 -> 5 terms)
+#         a_p_syms = {}
+#         b_p_syms = {}
+#         a_poly_exprs_list = []
+#         b_poly_exprs_list = []
+#         s = sp.Symbol("s")
+#
+#         for j in range(1, n_ders + 2):
+#             a_syms = sp.symbols(f"a{j}_0:{deg_poly+1}")
+#             b_syms = sp.symbols(f"b{j}_0:{deg_poly+1}")
+#             a_p_syms[j] = a_syms
+#             b_p_syms[j] = b_syms
+#             a_poly_exprs_list.append(sum(coef * s**i for i, coef in enumerate(a_syms)))
+#             b_poly_exprs_list.append(sum(coef * s**i for i, coef in enumerate(b_syms)))
+#         bs_symbols = sp.symbols(f"bs_0:{deg_poly+1}")
+#         bs_poly_exprs_list = sum(coef * s**i for i, coef in enumerate(bs_symbols))
+#
+#         self.a_poly_exprs = tuple(a_poly_exprs_list)
+#         self.b_poly_exprs = tuple(b_poly_exprs_list)
+#         self.bs_poly_exprs = (bs_poly_exprs_list)
+#
+#         a_poly_exprs_strings = tuple(f"{expr}" for expr in self.a_poly_exprs)
+#         b_poly_exprs_strings = tuple(f"{expr}" for expr in self.b_poly_exprs)
+#         bs_poly_exprs_string = f"{self.bs_poly_exprs}"
+#         generic_poly_bpmeth = bp.GeneralVectorPotential(hs=f"{curv}", a=a_poly_exprs_strings, b=b_poly_exprs_strings, bs=bs_poly_exprs_string)
+#         self.generic_poly_B = generic_poly_bpmeth.get_Bfield(lambdify=False)
+#         self.generic_poly_A = generic_poly_bpmeth.get_A()
+#
+#     def _extract_edge_fit_params(self, fit_type="edge_L"):
+#         pieces_all = self.field_fitter.fit_pars[fit_type]
+#         #print(f"Extracting {fit_type} fit parameters: {pieces_all}")
+#         base_map = {"Bx": "a", "By": "b", "Bs": "bs"}
+#         combined_pieces = []  # store as list of dicts, index = piece index
+#
+#         for der_order, fields_dict in pieces_all.items():
+#             d = int(der_order) + 1  # e.g. 0 -> a1_, 1 -> a2_, ...
+#             for field, pieces in fields_dict.items():
+#                 base = base_map[field]
+#
+#                 for p_idx, piece in enumerate(pieces):
+#                     # ensure the list is large enough
+#                     while len(combined_pieces) <= p_idx:
+#                         combined_pieces.append({})
+#
+#                     # Normalize coefficients
+#                     if isinstance(piece, dict):
+#                         coef_arr = np.array(list(piece.values()), dtype=float)
+#                     elif hasattr(piece, "coef"):
+#                         coef_arr = np.asarray(piece.coef)
+#                     elif isinstance(piece, (list, tuple, np.ndarray)):
+#                         coef_arr = np.asarray(piece)
+#                     else:
+#                         coef_arr = np.asarray([piece])
+#
+#                     coef_arr = coef_arr.ravel()
+#
+#                     # Add coefficients for this derivative order and field
+#                     if field == "Bs":
+#                         for power, val in enumerate(coef_arr):
+#                             name = f"{base}_{power}"
+#                             combined_pieces[p_idx][sp.Symbol(name)] = float(val)
+#                     else:
+#                         for power, val in enumerate(coef_arr):
+#                             name = f"{base}{d}_{power}"
+#                             combined_pieces[p_idx][sp.Symbol(name)] = float(val)
+#
+#         if fit_type == "edge_L":
+#             combined_pieces.reverse()  # left edge pieces need to be reversed
+#
+#         return combined_pieces
+#
+#     def _extract_sine_fit_params(self):
+#         fit_pars_all = self.field_fitter.fit_pars["sines"]
+#         n_modes = int(self.field_fitter.n_modes)
+#         combined_pieces = {}
+#         piece_idx = 0  # sines usually represent a single continuous region
+#
+#         for der_order, fields_dict in fit_pars_all.items():
+#             d = int(der_order) + 1
+#             for field, sine_params in fields_dict.items():
+#
+#                 # Determine correct prefix mapping and whether names are per-derivative
+#                 if field == "Bx":
+#                     pref_A, pref_B, pref_k = "Aa", "Ba", "ka"
+#                     dc_sym = sp.symbols(f"Aa_dc_{d}")
+#                     per_derivative = True
+#                 elif field == "By":
+#                     pref_A, pref_B, pref_k = "Ab", "Bb", "kb"
+#                     dc_sym = sp.symbols(f"Ab_dc_{d}")
+#                     per_derivative = True
+#                 else:  # "Bs" (longitudinal sines are not per-derivative)
+#                     pref_A, pref_B, pref_k = "As", "Bs", "ks"
+#                     dc_sym = sp.symbols("As_dc")
+#                     per_derivative = False
+#
+#                 if piece_idx not in combined_pieces:
+#                     combined_pieces[piece_idx] = {}
+#
+#                 # Loop over modes and assign amplitudes / wavenumbers
+#                 for m in range(n_modes):
+#                     i = 3 * m
+#                     if i < len(sine_params):
+#                         name = f"{pref_A}{m + 1}_{d}" if per_derivative else f"{pref_A}{m + 1}"
+#                         combined_pieces[piece_idx][sp.symbols(name)] = float(sine_params[i])
+#                     if i + 1 < len(sine_params):
+#                         name = f"{pref_B}{m + 1}_{d}" if per_derivative else f"{pref_B}{m + 1}"
+#                         combined_pieces[piece_idx][sp.symbols(name)] = float(sine_params[i + 1])
+#                     if i + 2 < len(sine_params):
+#                         name = f"{pref_k}{m + 1}_{d}" if per_derivative else f"{pref_k}{m + 1}"
+#                         combined_pieces[piece_idx][sp.symbols(name)] = float(sine_params[i + 2])
+#
+#                 # If there’s a trailing DC term (mod 3 == 1)
+#                 if (len(sine_params) % 3) == 1:
+#                     combined_pieces[piece_idx][dc_sym] = float(sine_params[-1])
+#
+#         return [combined_pieces[idx] for idx in sorted(combined_pieces.keys())]
+#
+#     def _extract_fit_params(self, fit_type="edge_L"):
+#         if fit_type in ("edge_L", "edge_R"):
+#             return self._extract_edge_fit_params(fit_type)
+#         elif fit_type == "sines":
+#             return self._extract_sine_fit_params()
+#         else:
+#             return []
+#
+#     def set_segments(self):
+#
+#         seg = []
+#         # determine fields (kept for selecting a reference for borders/shapes)
+#         fields = ["Bx", "By", "Bs"]
+#
+#         # Use the first field as reference for shapes / poly_borders (parameters are global and substituted once per segment)
+#         poly_borders = self.field_fitter.poly_borders
+#         nL = self.field_fitter.n_pieces_L
+#         nR = self.field_fitter.n_pieces_R
+#
+#         # ===================== LEFT EDGE =====================
+#         left_pieces = self._extract_fit_params(fit_type="edge_L")
+#         s_borders_L = poly_borders[: nL + 1]
+#         print(f"s_borders_L = {s_borders_L}")
+#
+#         for i, params in enumerate(left_pieces):
+#             if i + 1 >= len(s_borders_L):
+#                 break
+#             s0 = s_borders_L[i]
+#             length = s_borders_L[i + 1] - s_borders_L[i]
+#             segment = WigglerSegment(s0=s0, length=length)
+#
+#             # Substitute parameters into generic expressions once for this segment
+#             exprs_B  = list(self.generic_poly_B)
+#             exprs_A  = list(self.generic_poly_A)
+#             exprs_a  = list(self.a_poly_exprs)
+#             exprs_b  = list(self.b_poly_exprs)
+#             exprs_bs = self.bs_poly_exprs
+#
+#             segment.Bxexpr, segment.Byexpr, segment.Bsexpr = [expr.subs(params) for expr in exprs_B]
+#             segment.Axexpr, segment.Ayexpr, segment.Asexpr = [expr.subs(params) for expr in exprs_A]
+#             segment.a_expr = [exprs_a[j].subs(params) for j in range(len(exprs_a))]
+#             segment.b_expr = [exprs_b[j].subs(params) for j in range(len(exprs_b))]
+#             segment.bs_expr = [exprs_bs.subs(params)]
+#
+#             for comp in ["Bx", "By", "Bs", "Ax", "Ay", "As"]:
+#                 expr = getattr(segment, f"{comp}expr")
+#                 setattr(segment, f"{comp}fun", sp.lambdify(("x", "y", "s"), expr, modules="numpy"))
+#
+#             seg.append(segment)
+#
+#         # ===================== CENTER REGION (SINES) =====================
+#         sine_pieces = self._extract_fit_params(fit_type="sines")
+#         i0, i1 = nL, nL + 1
+#         s_borders_center = poly_borders[i0 : i1 + 1]
+#         print(f"s_borders_center = {s_borders_center}")
+#
+#         if len(sine_pieces) > 0 and len(s_borders_center) >= 2:
+#             for i, params in enumerate(sine_pieces):
+#                 s0 = s_borders_center[i]
+#                 length = s_borders_center[i + 1] - s_borders_center[i]
+#                 segment = WigglerSegment(s0=s0, length=length)
+#
+#                 exprs_B = list(self.generic_sine_B)
+#                 exprs_A = list(self.generic_sine_A)
+#                 exprs_a = list(self.a_sine_exprs)
+#                 exprs_b = list(self.b_sine_exprs)
+#                 exprs_bs = self.bs_sine_exprs
+#
+#                 segment.Bxexpr, segment.Byexpr, segment.Bsexpr = [expr.subs(params) for expr in exprs_B]
+#                 segment.Axexpr, segment.Ayexpr, segment.Asexpr = [expr.subs(params) for expr in exprs_A]
+#                 segment.a_expr = [exprs_a[j].subs(params) for j in range(len(exprs_a))]
+#                 segment.b_expr = [exprs_b[j].subs(params) for j in range(len(exprs_b))]
+#                 segment.bs_expr = [exprs_bs.subs(params)]
+#
+#                 for comp in ["Bx", "By", "Bs", "Ax", "Ay", "As"]:
+#                     expr = getattr(segment, f"{comp}expr")
+#                     setattr(segment, f"{comp}fun", sp.lambdify(("x", "y", "s"), expr, modules="numpy"))
+#
+#                 seg.append(segment)
+#
+#         # ===================== RIGHT EDGE =====================
+#         right_pieces = self._extract_fit_params(fit_type="edge_R")
+#         s_borders_R = poly_borders[-nR - 1 :]
+#         print(f"s_borders_R = {s_borders_R}")
+#
+#         for i, params in enumerate(right_pieces):
+#             if i + 1 >= len(s_borders_R):
+#                 break
+#             s0 = s_borders_R[i]
+#             length = s_borders_R[i + 1] - s_borders_R[i]
+#             segment = WigglerSegment(s0=s0, length=length)
+#
+#             exprs_B = list(self.generic_poly_B)
+#             exprs_A = list(self.generic_poly_A)
+#             exprs_a = list(self.a_poly_exprs)
+#             exprs_b = list(self.b_poly_exprs)
+#             exprs_bs = self.bs_poly_exprs
+#
+#             segment.Bxexpr, segment.Byexpr, segment.Bsexpr = [expr.subs(params) for expr in exprs_B]
+#             segment.Axexpr, segment.Ayexpr, segment.Asexpr = [expr.subs(params) for expr in exprs_A]
+#             segment.a_expr = [exprs_a[j].subs(params) for j in range(len(exprs_a))]
+#             segment.b_expr = [exprs_b[j].subs(params) for j in range(len(exprs_b))]
+#             segment.bs_expr = [exprs_bs.subs(params)]
+#
+#             for comp in ["Bx", "By", "Bs", "Ax", "Ay", "As"]:
+#                 expr = getattr(segment, f"{comp}expr")
+#                 setattr(segment, f"{comp}fun", sp.lambdify(("x", "y", "s"), expr, modules="numpy"))
+#
+#             seg.append(segment)
+#
+#         # Store all field segments
+#         self.segments = seg
+#
+#     def seg_selector(self, s):
+#         # Scalar path: return single segment
+#         if np.isscalar(s):
+#             seg = None
+#             for seg_candidate in self.segments:
+#                 s0 = seg_candidate.s0
+#                 s1 = s0 + seg_candidate.length
+#                 if s0 <= s <= s1:
+#                     seg = seg_candidate
+#                     break
+#             if seg is None:
+#                 seg = self.segments[-1]
+#             return seg
+#
+#         # Array path: return array of indices (one index per s)
+#         s_arr = np.asarray(s)
+#         idxs = np.full(s_arr.shape, len(self.segments) - 1, dtype=int)  # default last segment (clamp)
+#         for i, seg_candidate in enumerate(self.segments):
+#             s0 = seg_candidate.s0
+#             s1 = s0 + seg_candidate.length
+#             mask = (s_arr >= s0) & (s_arr <= s1)
+#             idxs[mask] = i
+#         return idxs
+#
+#     def get_field(self, x, y, s):
+#
+#         # Scalar s -> keep existing behavior
+#         if np.isscalar(s):
+#             seg = self.seg_selector(s)
+#             return seg.get_field(x, y, s)
+#
+#         # Vectorized s -> build outputs by grouping by segment
+#         s_arr = np.asarray(s)
+#         idxs = self.seg_selector(s_arr)  # array of indices
+#
+#         Bx = np.empty_like(s_arr, dtype=float)
+#         By = np.empty_like(s_arr, dtype=float)
+#         Bs = np.empty_like(s_arr, dtype=float)
+#
+#         for i, seg in enumerate(self.segments):
+#             mask = idxs == i
+#             if not np.any(mask):
+#                 continue
+#             s_sub = s_arr[mask]
+#             bx_sub, by_sub, bs_sub = seg.get_field(x, y, s_sub)
+#             Bx[mask] = bx_sub
+#             By[mask] = by_sub
+#             Bs[mask] = bs_sub
+#
+#         return Bx, By, Bs
+#
+#     def get_vector_potential(self, x, y, s):
+#         import numpy as _np
+#
+#         if _np.isscalar(s):
+#             seg = self.seg_selector(s)
+#             return seg.get_vector_potential(x, y, s)
+#
+#         s_arr = _np.asarray(s)
+#         idxs = self.seg_selector(s_arr)
+#
+#         Ax = _np.empty_like(s_arr, dtype=float)
+#         Ay = _np.empty_like(s_arr, dtype=float)
+#         As = _np.empty_like(s_arr, dtype=float)
+#
+#         for i, seg in enumerate(self.segments):
+#             mask = idxs == i
+#             if not _np.any(mask):
+#                 continue
+#             s_sub = s_arr[mask]
+#             ax_sub, ay_sub, as_sub = seg.get_vector_potential(x, y, s_sub)
+#             Ax[mask] = ax_sub
+#             Ay[mask] = ay_sub
+#             As[mask] = as_sub
+#
+#         return Ax, Ay, As
+#
+#     def plot_field(self, s_ends=(None,None), x0=0.0, y0=0.0, n_points=2000, plot_data=False):
+#         if s_ends == (None, None):
+#             s_start = self.field_fitter.s_full[0]
+#             s_end   = self.field_fitter.s_full[-1]
+#         else:
+#             s_start, s_end = s_ends
+#
+#         s_vals = np.linspace(s_start, s_end, n_points)
+#         # If plot_data is true, then it tries to extract the corresponding data from field_fitter.
+#         # If that data is not available (because x0 and y0 are not in the dataframe index), then it skips plotting the data.
+#         if plot_data:
+#             x_int = int(x0 * 1000)
+#             y_int = int(y0 * 1000)
+#             import warnings
+#             # verify (X,Y) exists in the dataframe index
+#             try:
+#                 self.field_fitter.df_raw_data.xs((x_int, y_int), level=["X", "Y"])
+#             except KeyError:
+#                 xy_pairs = sorted(set(zip(self.field_fitter.df_raw_data.index.get_level_values("X"),
+#                                           self.field_fitter.df_raw_data.index.get_level_values("Y"))))
+#                 warnings.warn(
+#                     f"Requested (X,Y)=({x_int},{y_int}) not found in `self.field_fitter.df`. "
+#                     f"Skipping data overlay. Available (X,Y) pairs (first 10 shown): {xy_pairs[:10]}"
+#                 )
+#                 plot_data = False
+#             else:
+#                 self.field_fitter.xy_point = (x_int, y_int)
+#                 s_full = self.field_fitter.s_full
+#                 Bx_data = self.field_fitter.raw_data[0]["Bx"]
+#                 By_data = self.field_fitter.raw_data[0]["By"]
+#                 Bs_data = self.field_fitter.raw_data[0]["Bs"]
+#
+#         Bx_vals, By_vals, Bs_vals = self.get_field(x0, y0, s_vals)
+#
+#         plt.figure(figsize=(10, 6))
+#         plt.plot(s_vals, Bx_vals, label='Bx')
+#         plt.plot(s_vals, By_vals, label='By')
+#         plt.plot(s_vals, Bs_vals, label='Bs')
+#
+#         if plot_data:
+#             plt.scatter(s_full, Bx_data, label='Bx Data', color='C0', s=5, alpha=0.5)
+#             plt.scatter(s_full, By_data, label='By Data', color='C1', s=5, alpha=0.5)
+#             plt.scatter(s_full, Bs_data, label='Bs Data', color='C2', s=5, alpha=0.5)
+#
+#         plt.xlabel('s [m]')
+#         plt.ylabel('Magnetic Field [T]')
+#         plt.title(f'Magnetic Field along Wiggler at (x={x0}, y={y0})')
+#         plt.legend()
+#         plt.grid()
+#         plt.show()
+#
+#     def set_integrator(self, n_slices=1000, n_steps = 1000):
+#         if self.segments == []:
+#             self.set_segments()
+#
+#         self.n_slices = n_slices
+#         l_wig = self.field_fitter.length
+#         s_start = self.field_fitter.s_full[0]
+#         s_end   = self.field_fitter.s_full[-1]
+#
+#         s_cuts = np.linspace(s_start, s_end, n_slices + 1)
+#         #s_mid = 0.5 * (s_cuts[:-1] + s_cuts[1:])
+#         for ii in range(n_slices):
+#             wig = xt.BorisSpatialIntegrator(fieldmap_callable=self.get_field, s_start=s_cuts[ii], s_end=s_cuts[ii + 1],
+#                                             n_steps=np.round(n_steps / n_slices).astype(int),
+#                                             verbose=True)
+#             self.integrator.append(wig)
+#
+#     def get_line(self):
+#         if self.integrator == []:
+#             self.set_integrator()
+#
+#         self.env = xt.Environment()
+#
+#         for ii in range(self.n_slices):
+#             self.env.elements[f'wigslice_{ii}'] = self.integrator[ii]
+#         self.wiggler_line = self.env.new_line(components=['wigslice_' + str(ii) for ii in range(self.n_slices)])
+#         return self.wiggler_line
+#
+#     def correctors(self, particle_ref):
+#         start_time = time.time()
+#         if self.wiggler_line is None:
+#             self.get_line()
+#
+#         self.wiggler_line.particle_ref = particle_ref
+#
+#         self.env['k0l_corr1'] = 0.
+#         self.env['k0l_corr2'] = 0.
+#         self.env['k0l_corr3'] = 0.
+#         self.env['k0l_corr4'] = 0.
+#         self.env['k0sl_corr1'] = 0.
+#         self.env['k0sl_corr2'] = 0.
+#         self.env['k0sl_corr3'] = 0.
+#         self.env['k0sl_corr4'] = 0.
+#         self.env['on_wig_corr'] = 1.0
+#
+#         self.env.new('corr1', xt.Multipole, knl=['on_wig_corr * k0l_corr1'], ksl=['on_wig_corr * k0sl_corr1'])
+#         self.env.new('corr2', xt.Multipole, knl=['on_wig_corr * k0l_corr2'], ksl=['on_wig_corr * k0sl_corr2'])
+#         self.env.new('corr3', xt.Multipole, knl=['on_wig_corr * k0l_corr3'], ksl=['on_wig_corr * k0sl_corr3'])
+#         self.env.new('corr4', xt.Multipole, knl=['on_wig_corr * k0l_corr4'], ksl=['on_wig_corr * k0sl_corr4'])
+#
+#         l_wig = self.field_fitter.length
+#
+#         self.wiggler_line.insert([
+#             self.env.place('corr1', at=0.02),
+#             self.env.place('corr2', at=0.1),
+#             self.env.place('corr3', at=l_wig - 0.1),
+#             self.env.place('corr4', at=l_wig - 0.02),
+#         ], s_tol=5e-3
+#         )
+#
+#         # To compute the kicks
+#         opt = self.wiggler_line.match(
+#             solve=False,
+#             betx=0, bety=0,
+#             only_orbit=True,
+#             include_collective=True,
+#             vary=xt.VaryList(['k0l_corr1', 'k0sl_corr1',
+#                               'k0l_corr2', 'k0sl_corr2',
+#                               'k0l_corr3', 'k0sl_corr3',
+#                               'k0l_corr4', 'k0sl_corr4',
+#                               ], step=1e-6),
+#             targets=[
+#                 xt.TargetSet(x=0, px=0, y=0, py=0., at=xt.END),
+#                 xt.TargetSet(x=0., y=0, at='wigslice_167'),
+#                 xt.TargetSet(x=0., y=0, at='wigslice_833')
+#                 ],
+#         )
+#         opt.step(2)
+#         end_time = time.time()
+#         print(f"Wiggler correctors set in {end_time - start_time:.2f} seconds.")
+#         print("Corrector strengths [T]:")
+#         print(f"  k0l_corr1 = {self.env['k0l_corr1']:.6e}, k0sl_corr1 = {self.env['k0sl_corr1']:.6e}")
+#         print(f"  k0l_corr2 = {self.env['k0l_corr2']:.6e}, k0sl_corr2 = {self.env['k0sl_corr2']:.6e}")
+#         print(f"  k0l_corr3 = {self.env['k0l_corr3']:.6e}, k0sl_corr3 = {self.env['k0sl_corr3']:.6e}")
+#         print(f"  k0l_corr4 = {self.env['k0l_corr4']:.6e}, k0sl_corr4 = {self.env['k0sl_corr4']:.6e}")

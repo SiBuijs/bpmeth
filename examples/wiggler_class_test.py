@@ -1,6 +1,7 @@
-from wiggler_class import FieldFitter
+from wiggler_class import FieldFitter, FieldCalculator
 from wiggler_class import SymbolicGenerator
-from wiggler_class import WigglerFull
+from wiggler_class import FieldCalculator
+#from wiggler_class import WigglerFull
 import sympy as sp
 import xtrack as xt
 import matplotlib.pyplot as plt
@@ -32,30 +33,10 @@ test_wiggler = FieldFitter(
 test_wiggler.set()
 from collections import defaultdict
 
-df_here = test_wiggler.df_fit_pars
-
-# per (field_component, derivative_x, region_name) pick the row(s) with largest s_start <= s_value
-s_value = 0.5
-
-df = df_here.reset_index()  # make s_start a column
-group_cols = ['field_component', 'derivative_x', 'region_name']
-
-num_iter = 10000
-
-# --- simple boolean mask (returns all rows where s_start <= s_value <= s_end) ---
-s_start = df['s_start'].values
-s_end = df['s_end'].values
-s_val = s_value
-
-start_time = time.time()
-for _ in range(num_iter):
-    mask = (s_start <= s_val) & (s_end >= s_val)
-df_ok = df.loc[mask]
-end_time = time.time()
-print(f"Time taken for {num_iter} iterations: {end_time - start_time} seconds")
-print(f"Average time per iteration: {(end_time - start_time)/num_iter} seconds")
-
-print(df_ok)
-
-param_dict = df_ok.set_index("param_name")["param_value"].to_dict()
-print(param_dict)
+symbolic_wiggler = SymbolicGenerator(test_wiggler)
+print(f"Symbolic Ax : {symbolic_wiggler.symbolic_Ax}")
+print(f"Symbolic Ay : {symbolic_wiggler.symbolic_Ay}")
+print(f"Symbolic As : {symbolic_wiggler.symbolic_As}")
+print(f"Symbolic Bx : {symbolic_wiggler.symbolic_Bx}")
+print(f"Symbolic By : {symbolic_wiggler.symbolic_By}")
+print(f"Symbolic Bs : {symbolic_wiggler.symbolic_Bs}")
