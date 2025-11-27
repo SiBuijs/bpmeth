@@ -1,6 +1,7 @@
 from wiggler_class import FieldFitter, FieldCalculator
 from wiggler_class import SymbolicGenerator
 from wiggler_class import FieldCalculator
+import inspect
 #from wiggler_class import WigglerFull
 import sympy as sp
 import xtrack as xt
@@ -34,18 +35,23 @@ test_wiggler.set()
 from collections import defaultdict
 
 symbolic_wiggler = SymbolicGenerator(test_wiggler)
-print(f"Symbolic Ax : {symbolic_wiggler.symbolic_Ax}")
-print(f"Symbolic Ay : {symbolic_wiggler.symbolic_Ay}")
-print(f"Symbolic As : {symbolic_wiggler.symbolic_As}")
-print(f"Symbolic Bx : {symbolic_wiggler.symbolic_Bx}")
-print(f"Symbolic By : {symbolic_wiggler.symbolic_By}")
-print(f"Symbolic Bs : {symbolic_wiggler.symbolic_Bs}")
+
+prrrr
+
+#print(f"Symbolic Ax : {symbolic_wiggler.symbolic_Ax}")
+#print(f"Symbolic Ay : {symbolic_wiggler.symbolic_Ay}")
+#print(f"Symbolic As : {symbolic_wiggler.symbolic_As}")
+#print(f"Symbolic Bx : {symbolic_wiggler.symbolic_Bx}")
+#print(f"Symbolic By : {symbolic_wiggler.symbolic_By}")
+#print(f"Symbolic Bs : {symbolic_wiggler.symbolic_Bs}")
 
 field_calculator = FieldCalculator(symbolic_wiggler, test_wiggler.df_fit_pars)
 
-field_calculator.plot_B_field(x=0.001, y=0.001)
+field_calculator.plot_B_field(x=0.001, y=0.000)
+
+print(inspect.getsource(field_calculator.Bx_region_funcs[10]))
 
 iter = 1000
-
-for _ in range(iter):
-    B_field = field_calculator.get_Bfield(x=0.001, y=0.001, s=0.5)
+s_vals = np.linspace(0.1, 2.1, iter)
+for i in range(iter):
+    B_field = field_calculator.get_Bfield(x=0.001, y=0.001, s=s_vals[i])
