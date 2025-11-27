@@ -1,6 +1,6 @@
-from wiggler_class import FieldFitter, FieldCalculator
+from wiggler_class import FieldFitter
 from wiggler_class import SymbolicGenerator
-from wiggler_class import FieldCalculator
+#from wiggler_class import FieldCalculator
 import inspect
 #from wiggler_class import WigglerFull
 import sympy as sp
@@ -32,26 +32,24 @@ test_wiggler = FieldFitter(
                             )
 
 test_wiggler.set()
-from collections import defaultdict
 
 symbolic_wiggler = SymbolicGenerator(test_wiggler)
 
-prrrr
+symbolic_wiggler.write_to_python(field='B')
 
-#print(f"Symbolic Ax : {symbolic_wiggler.symbolic_Ax}")
-#print(f"Symbolic Ay : {symbolic_wiggler.symbolic_Ay}")
-#print(f"Symbolic As : {symbolic_wiggler.symbolic_As}")
-#print(f"Symbolic Bx : {symbolic_wiggler.symbolic_Bx}")
-#print(f"Symbolic By : {symbolic_wiggler.symbolic_By}")
-#print(f"Symbolic Bs : {symbolic_wiggler.symbolic_Bs}")
+import importlib
+import B_field_eval
+importlib.reload(B_field_eval)
 
-field_calculator = FieldCalculator(symbolic_wiggler, test_wiggler.df_fit_pars)
+param_dict = test_wiggler.df_fit_pars[['param_name', 'param_value']].set_index('param_name').to_dict()['param_value']
 
-field_calculator.plot_B_field(x=0.001, y=0.000)
+print(param_dict)
 
-print(inspect.getsource(field_calculator.Bx_region_funcs[10]))
-
-iter = 1000
-s_vals = np.linspace(0.1, 2.1, iter)
-for i in range(iter):
-    B_field = field_calculator.get_Bfield(x=0.001, y=0.001, s=s_vals[i])
+iter = 100000
+start_time = time.time()
+for _ in range(iter):
+    result = B_field_eval.evaluate_B(0.001, 0, -1.1, **param_dict)
+end_time = time.time()
+print(f"Time for {iter} iterations: {end_time - start_time} seconds")
+print(f"Time per iteration: {(end_time - start_time)/iter} seconds")
+print(result)
