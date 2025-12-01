@@ -869,38 +869,60 @@ class FieldCalculator:
 
     #@profile
     def _select_region(self, s_val):
-        return bisect.bisect_right(self.s_boundaries, s_val) - 1
+        import numpy as _np
+        sb = self.s_boundaries
+        # Use numpy.searchsorted which accepts scalars and arrays
+        idxs = _np.searchsorted(sb, s_val, side='right') - 1
+        # Clamp to valid region indices [0, n_regions-1]
+        max_idx = len(sb) - 2
+        idxs = _np.clip(idxs, 0, max_idx)
+        if _np.isscalar(s_val):
+            return int(idxs)
+        return idxs
 
     #@profile
     def get_Bfield(self, x, y, s, python=True):
-        idx = self._select_region(s)
-        param_dict = self._par_dicts[int(idx)]
+        import numpy as _np
+
+        s_arr = _np.asarray(s)
+        scalar_input = s_arr.ndim == 0
+        # ensure iterable sequence of float scalars
+        if scalar_input:
+            s_list = [float(s_arr)]
+        else:
+            s_list = s_arr.astype(float).tolist()
+
+        # determine region indices for all s values (works for scalars and arrays)
+        idxs = self._select_region(s_list)
+        # normalize idxs to iterable list
+        if _np.isscalar(idxs):
+            idxs = [int(idxs)] * len(s_list) if len(s_list) > 1 else [int(idxs)]
+
+        Bx_out = []
+        By_out = []
+        Bs_out = []
 
         if python:
-            Bx, By, Bs = self.B_field_eval.evaluate_B(x, y, s, **param_dict)
-
+            for s_val, idx in zip(s_list, idxs):
+                param_dict = self._par_dicts[int(idx)]
+                Bx, By, Bs = self.B_field_eval.evaluate_B(x, y, s_val, **param_dict)
+                Bx_out.append(Bx)
+                By_out.append(By)
+                Bs_out.append(Bs)
         else:
             from _field import ffi, lib
+            for s_val, idx in zip(s_list, idxs):
+                param_dict = self._par_dicts[int(idx)]
+                params = np.array(list(param_dict.values()), dtype=np.double)
+                params_c = ffi.cast("double*", params.ctypes.data)
+                result = lib.evaluate_B(x, y, s_val, params_c)
+                Bx_out.append(result.Bx)
+                By_out.append(result.By)
+                Bs_out.append(result.Bs)
 
-            # Allocate params (35 doubles)
-            params = param_dict.values()
-            params = np.array(list(params), dtype=np.double)
-
-            # Convert NumPy → C pointer
-            params_c = ffi.cast("double*", params.ctypes.data)
-
-            # Call the function
-            result = lib.evaluate_B(x, y, s, params_c)
-
-            Bx = result.Bx
-            By = result.By
-            Bs = result.Bs
-
-            # print("Bx =", result.Bx)
-            # print("By =", result.By)
-            # print("Bs =", result.Bs)
-
-        return Bx, By, Bs
+        if scalar_input:
+            return Bx_out[0], By_out[0], Bs_out[0]
+        return _np.array(Bx_out), _np.array(By_out), _np.array(Bs_out)
 
     def get_vector_potential(self, x, y, s, python=True):
         idx = self._select_region(s)
@@ -954,15 +976,8 @@ class FieldCalculator:
         s_max = self.s_boundaries[-2]
         s_vals = np.linspace(s_min, s_max, n_points)
 
-        Bx_vals = np.zeros(n_points)
-        By_vals = np.zeros(n_points)
-        Bs_vals = np.zeros(n_points)
 
-        for i, s in enumerate(s_vals):
-            Bx, By, Bs = self.get_Bfield(x, y, s, python=python)
-            Bx_vals[i] = Bx
-            By_vals[i] = By
-            Bs_vals[i] = Bs
+        Bx_vals, By_vals, Bs_vals = self.get_Bfield(x, y, s_vals, python=python)
 
         plt.figure(figsize=(10, 6))
         plt.plot(s_vals, Bx_vals, label='Bx')

@@ -80,6 +80,8 @@ print(f"Time per evaluation using C code: {(end_time - start_time)/iter} seconds
 field_calculator.plot_B_field(x=x, y=y, python=False)
 #field_calculator.plot_A_field(x=x, y=y, python=False)
 
+prrrr
+
 field_calculator.set_integrator()
 wig_line = field_calculator.get_line()
 
