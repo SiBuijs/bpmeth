@@ -713,166 +713,247 @@ class SymbolicGenerator:
 
             f.write(f"    return {field}x, {field}y, {field}s\n")
 
+    def write_to_c(self, field='B'):
+        from sympy.printing.c import C99CodePrinter
 
-# class FieldCalculator:
-#     def __init__(self, SymbolicGenerator, df_fit_pars):
-#         self.symbolic_generator = SymbolicGenerator
-#         self.df = self._rework_dataframe(df_fit_pars)
-#         self.s_start = self.df['s_start'].to_numpy()
-#         self.s_end = self.df['s_end'].to_numpy()
-#         self.s_boundaries = np.unique(np.concatenate((self.s_start, self.s_end)))
-#         self.s_mid = (self.s_boundaries[:-1] + self.s_boundaries[1:]) / 2
-#
-#         self._np_par_cache = {
-#             "s_start": self.df["s_start"].to_numpy(),
-#             "s_end": self.df["s_end"].to_numpy(),
-#             "param_name": self.df["param_name"].to_numpy(),
-#             "param_value": self.df["param_value"].to_numpy(),
-#         }
-#
-#         self._par_dicts = []
-#         for i in range(len(self.s_boundaries) - 1):
-#             s_mid_i = self.s_mid[i]
-#             mask = (self._np_par_cache["s_start"] <= s_mid_i) & (self._np_par_cache["s_end"] > s_mid_i)
-#             names = self._np_par_cache["param_name"][mask]
-#             vals = self._np_par_cache["param_value"][mask]
-#             self._par_dicts.append(dict(zip(names, vals)))
-#
-#         # Dataframe for clarity. We actually will use lists of partial functions for speed.
-#         self.region_df = self._build_region_df()
-#         self.Bx_region_funcs = self.region_df["Bx_func"].to_list()
-#         self.By_region_funcs = self.region_df["By_func"].to_list()
-#         self.Bs_region_funcs = self.region_df["Bs_func"].to_list()
-#         self.Ax_region_funcs = self.region_df["Ax_func"].to_list()
-#         self.Ay_region_funcs = self.region_df["Ay_func"].to_list()
-#         self.As_region_funcs = self.region_df["As_func"].to_list()
-#
-#         if any([self.symbolic_generator.lambdified_Ax is None,
-#                 self.symbolic_generator.lambdified_Ay is None,
-#                 self.symbolic_generator.lambdified_As is None,
-#                 self.symbolic_generator.lambdified_Bx is None,
-#                 self.symbolic_generator.lambdified_By is None,
-#                 self.symbolic_generator.lambdified_Bs is None]):
-#             self.symbolic_generator._set_lambdified_exprs()
-#
-#     def show_functions(self):
-#         import inspect
-#         print(f"Lambdified Bx(x, y, s) = {inspect.getsource(self.symbolic_generator.lambdified_Bx)}")
-#         print(f"Lambdified By(x, y, s) = {inspect.getsource(self.symbolic_generator.lambdified_By)}")
-#         print(f"Lambdified Bs(x, y, s) = {inspect.getsource(self.symbolic_generator.lambdified_Bs)}")
-#         print(f"Lambdified Ax(x, y, s) = {inspect.getsource(self.symbolic_generator.lambdified_Ax)}")
-#         print(f"Lambdified Ay(x, y, s) = {inspect.getsource(self.symbolic_generator.lambdified_Ay)}")
-#         print(f"Lambdified As(x, y, s) = {inspect.getsource(self.symbolic_generator.lambdified_As)}")
-#
-#     @staticmethod
-#     def _rework_dataframe(df_fit_pars):
-#         # reset index to make s_start and s_end columns
-#         df = df_fit_pars.reset_index()
-#         # create a MultiIndex with field_component, derivative_x, region_name
-#         df.set_index(['field_component', 'derivative_x', 'region_name'], inplace=True)
-#         return df
-#
-#     def _build_region_df(self):
-#         regions = []
-#         for i in range(len(self.s_boundaries) - 1):
-#             par_dict = self._get_par_dict(self.s_mid[i])
-#             Bx_region = self.make_region_fun(self.symbolic_generator.lambdified_Bx, par_dict)
-#             By_region = self.make_region_fun(self.symbolic_generator.lambdified_By, par_dict)
-#             Bs_region = self.make_region_fun(self.symbolic_generator.lambdified_Bs, par_dict)
-#             Ax_region = self.make_region_fun(self.symbolic_generator.lambdified_Ax, par_dict)
-#             Ay_region = self.make_region_fun(self.symbolic_generator.lambdified_Ay, par_dict)
-#             As_region = self.make_region_fun(self.symbolic_generator.lambdified_As, par_dict)
-#             regions.append({
-#                 "s_start": self.s_boundaries[i],
-#                 "Bx_func": Bx_region,
-#                 "By_func": By_region,
-#                 "Bs_func": Bs_region,
-#                 "Ax_func": Ax_region,
-#                 "Ay_func": Ay_region,
-#                 "As_func": As_region,
-#             })
-#         region_df = pd.DataFrame(regions)
-#         return region_df
-#
-#     #@profile
-#     def _get_par_dict(self, s_val):
-#         # return empty dict if no parameter dictionaries were built
-#         if not self._par_dicts:
-#             return {}
-#         # find region index quickly and clamp to valid range without relying on numpy scalars
-#         idx = bisect.bisect_right(self.s_boundaries, s_val) - 1
-#         if idx < 0:
-#             idx = 0
-#         elif idx >= len(self._par_dicts):
-#             idx = len(self._par_dicts) - 1
-#         return self._par_dicts[int(idx)]
-#
-#     #@profile
-#     def _select_region(self, s_val):
-#         sb = self.s_boundaries
-#         idx = bisect.bisect_right(sb, s_val) - 1
-#         return idx
-#
-#     def make_region_fun(self, B_function, coeffs):
-#         # coeffs may be a dict (param_name -> value) or an iterable of values.
-#         if isinstance(coeffs, dict):
-#             # order values to match symbolic parameter ordering
-#             param_syms = getattr(self.symbolic_generator, "param_symbols", None)
-#             if param_syms is None:
-#                 coeffs_tuple = tuple(coeffs.values())
-#             else:
-#                 coeffs_tuple = tuple(coeffs.get(str(sym), coeffs.get(sym, 0.0)) for sym in param_syms)
-#         else:
-#             coeffs_tuple = tuple(coeffs)
-#         return lambda x, y, s, _c=coeffs_tuple: B_function(x, y, s, *_c)
-#
-#     #@profile
-#     def get_Bfield(self, x, y, s):
-#         idx = self._select_region(s)
-#
-#         Bx = self.Bx_region_funcs[idx](x, y, s)
-#         By = self.By_region_funcs[idx](x, y, s)
-#         Bs = self.Bs_region_funcs[idx](x, y, s)
-#
-#         return Bx, By, Bs
-#
-#     def get_vector_potential(self, x, y, s):
-#         idx = self._select_region(s)
-#
-#         Ax = self.Bx_region_funcs[idx](x, y, s)
-#         Ay = self.By_region_funcs[idx](x, y, s)
-#         As = self.Bs_region_funcs[idx](x, y, s)
-#
-#         return Ax, Ay, As
-#
-#     # PUBLIC
-#     # Plot the B field along s at a given (x, y) point.
-#     # Seems to function as desired and the plotted data seems correct.
-#     def plot_B_field(self, x=0, y=0, n_points=2000, plot_data=False):
-#         s_min = self.s_boundaries[0]
-#         s_max = self.s_boundaries[-2]
-#         s_vals = np.linspace(s_min, s_max, n_points)
-#
-#         Bx_vals = np.zeros(n_points)
-#         By_vals = np.zeros(n_points)
-#         Bs_vals = np.zeros(n_points)
-#
-#         for i, s in enumerate(s_vals):
-#             Bx, By, Bs = self.get_Bfield(x, y, s)
-#             Bx_vals[i] = Bx
-#             By_vals[i] = By
-#             Bs_vals[i] = Bs
-#
-#         plt.figure(figsize=(10, 6))
-#         plt.plot(s_vals, Bx_vals, label='Bx')
-#         plt.plot(s_vals, By_vals, label='By')
-#         plt.plot(s_vals, Bs_vals, label='Bs')
-#         plt.xlabel('s [m]')
-#         plt.ylabel('Magnetic Field [T]')
-#         plt.title(f'Magnetic Field at (x={x}, y={y})')
-#         plt.legend()
-#         plt.grid()
-#         plt.show()
+        from sympy import Pow
+
+        class MulPowerPrinter(C99CodePrinter):
+            def _print_Pow(self, expr):
+                base, exp = expr.as_base_exp()
+
+                # Only rewrite integer positive powers
+                if exp.is_integer and exp.is_positive:
+                    n = int(exp)
+                    return "*".join([self._print(base)] * n)
+
+                # Fallback to default handling
+                return super()._print_Pow(expr)
+
+        printer = MulPowerPrinter()
+
+        if field == 'A':
+            cse_subs = self.A_cse_subs
+            reduced_exprs = self.A_reduced_exprs
+            filename = 'A_field_eval.c'
+        else:
+            cse_subs = self.B_cse_subs
+            reduced_exprs = self.B_reduced_exprs
+            filename = 'B_field_eval.c'
+
+        with open(filename, 'w') as f:
+            f.write(f"#include <math.h>\n\n")
+
+            f.write(f"typedef struct {{\n")
+            f.write(f"    double {field}x, {field}y, {field}s;\n")
+            f.write(f"}} Field;\n")
+
+            f.write(f"// Auto-generated symbolic field expressions for {field}\n")
+            f.write(f"Field evaluate_{field}(const double x, const double y, const double s, const double params[static {len(self.param_names)}]) {{\n")
+
+            f.write("    // Parameter assignments\n")
+            for i, name in enumerate(self.param_names):
+                f.write(f"    const double {name} = params[{i}];\n")
+            f.write("\n")
+
+            f.write("    // Common sub-expressions\n")
+            for lhs, rhs in cse_subs:
+                f.write(f"    const double {lhs} = {printer.doprint(rhs)};\n")
+            f.write("\n")
+            f.write("    // Reduced expressions\n")
+            names = [f'{field}x', f'{field}y', f'{field}s']
+            for i, expr in enumerate(reduced_exprs):
+                f.write(f"    const double {names[i]} = {expr};\n")
+            f.write("\n")
+
+            f.write(f"    Field {field};\n")
+            f.write(f"    {field}.{field}x = {field}x;\n")
+            f.write(f"    {field}.{field}y = {field}y;\n")
+            f.write(f"    {field}.{field}s = {field}s;\n")
+            f.write(f"    return {field};\n")
+            f.write("}")
+
+    def compile_C_code(self, field='B'):
+        from cffi import FFI
+        import sys
+
+        ffibuilder = FFI()
+
+        ffibuilder.cdef(f"""
+            typedef struct {{
+                double {field}x, {field}y, {field}s;
+            }} Field;
+
+            Field evaluate_{field}(double x, double y, double s, double* params);
+        """)
+
+        # Read the C file
+        with open(f"{field}_field_eval.c") as f:
+            c_source = f.read()
+
+        # --- Platform-specific optimizer flags ---
+        common_flags = ["-O3", "-fomit-frame-pointer"]
+
+        # Fast math optimizations (enable only if safe for your physics model)
+        fast_math = ["-ffast-math"]
+
+        # CPU-specific optimizations (best performance, but not portable across machines)
+        march_native = ["-march=native"]
+
+        extra_compile_args = common_flags + fast_math + march_native
+
+        # Windows uses MSVC; flags are different
+        #if sys.platform == "win32":
+            # MSVC equivalents:
+            # /O2 = optimize, /fp:fast = fast math
+            # extra_compile_args = ["/O2", "/fp:fast"]
+
+        ffibuilder.set_source(
+            "_field",  # Name of the generated Python extension module
+            c_source,  # Include the C code
+            libraries=[],  # No external libraries needed
+            extra_compile_args=extra_compile_args,
+        )
+
+        ffibuilder.compile(verbose=True)
+
+
+class FieldCalculator:
+    def __init__(self, df_fit_pars):
+        import importlib
+        import B_field_eval
+        import A_field_eval
+        importlib.reload(B_field_eval)
+        importlib.reload(A_field_eval)
+        self.B_field_eval = B_field_eval
+        self.A_field_eval = A_field_eval
+
+        self.df = self._rework_dataframe(df_fit_pars)
+        self.s_start = self.df['s_start'].to_numpy()
+        self.s_end = self.df['s_end'].to_numpy()
+        self.s_boundaries = np.unique(np.concatenate((self.s_start, self.s_end)))
+        self.s_mid = (self.s_boundaries[:-1] + self.s_boundaries[1:]) / 2
+
+        # TODO: Remove this dict, can just use lists/tuples.
+        self._np_par_cache = {
+            "param_name": self.df["param_name"].to_numpy(),
+            "param_value": self.df["param_value"].to_numpy(),
+        }
+
+        self._par_dicts = []
+        for i in range(len(self.s_boundaries) - 1):
+            s_mid_i = self.s_mid[i]
+            mask = (self.s_start <= s_mid_i) & (self.s_end > s_mid_i)
+            names = self._np_par_cache["param_name"][mask]
+            vals = self._np_par_cache["param_value"][mask]
+            self._par_dicts.append(dict(zip(names, vals)))
+
+    @staticmethod
+    def _rework_dataframe(df_fit_pars):
+        # reset index to make s_start and s_end columns
+        df = df_fit_pars.reset_index()
+        # create a MultiIndex with field_component, derivative_x, region_name
+        df.set_index(['field_component', 'derivative_x', 'region_name'], inplace=True)
+        return df
+
+    #@profile
+    def _select_region(self, s_val):
+        return bisect.bisect_right(self.s_boundaries, s_val) - 1
+
+    #@profile
+    def get_Bfield(self, x, y, s, Python=True):
+        idx = self._select_region(s)
+        param_dict = self._par_dicts[int(idx)]
+
+        if Python:
+            Bx, By, Bs = self.B_field_eval.evaluate_B(x, y, s, **param_dict)
+
+        else:
+            from _field import ffi, lib
+
+            # Allocate params (35 doubles)
+            params = param_dict.values()
+            params = np.array(list(params), dtype=np.double)
+
+            # Convert NumPy → C pointer
+            params_c = ffi.cast("double*", params.ctypes.data)
+
+            # Call the function
+            result = lib.evaluate_B(x, y, s, params_c)
+
+            Bx = result.Bx
+            By = result.By
+            Bs = result.Bs
+
+            # print("Bx =", result.Bx)
+            # print("By =", result.By)
+            # print("Bs =", result.Bs)
+
+        return Bx, By, Bs
+
+    def get_vector_potential(self, x, y, s):
+        idx = self._select_region(s)
+
+        param_dict = self._par_dicts[int(idx)]
+
+        Ax, Ay, As = self.A_field_eval.evaluate_A(x, y, s, **param_dict)
+
+        return Ax, Ay, As
+
+    # PUBLIC
+    # Plot the B field along s at a given (x, y) point.
+    # Seems to function as desired and the plotted data seems correct.
+    def plot_B_field(self, x=0, y=0, n_points=2000, plot_data=False):
+        s_min = self.s_boundaries[0]
+        s_max = self.s_boundaries[-2]
+        s_vals = np.linspace(s_min, s_max, n_points)
+
+        Bx_vals = np.zeros(n_points)
+        By_vals = np.zeros(n_points)
+        Bs_vals = np.zeros(n_points)
+
+        for i, s in enumerate(s_vals):
+            Bx, By, Bs = self.get_Bfield(x, y, s)
+            Bx_vals[i] = Bx
+            By_vals[i] = By
+            Bs_vals[i] = Bs
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(s_vals, Bx_vals, label='Bx')
+        plt.plot(s_vals, By_vals, label='By')
+        plt.plot(s_vals, Bs_vals, label='Bs')
+        plt.xlabel('s [m]')
+        plt.ylabel('Magnetic Field [T]')
+        plt.title(f'Magnetic Field at (x={x}, y={y})')
+        plt.legend()
+        plt.grid()
+        plt.show()
+
+    def plot_A_field(self, x=0, y=0, n_points=2000):
+        s_min = self.s_boundaries[0]
+        s_max = self.s_boundaries[-2]
+        s_vals = np.linspace(s_min, s_max, n_points)
+
+        Ax_vals = np.zeros(n_points)
+        Ay_vals = np.zeros(n_points)
+        As_vals = np.zeros(n_points)
+
+        for i, s in enumerate(s_vals):
+            Ax, Ay, As = self.get_vector_potential(x, y, s)
+            Ax_vals[i] = Ax
+            Ay_vals[i] = Ay
+            As_vals[i] = As
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(s_vals, Ax_vals, label='Ax')
+        plt.plot(s_vals, Ay_vals, label='Ay')
+        plt.plot(s_vals, As_vals, label='As')
+        plt.xlabel('s [m]')
+        plt.ylabel('Vector Potential [T·m]')
+        plt.title(f'Vector Potential at (x={x}, y={y})')
+        plt.legend()
+        plt.grid()
+        plt.show()
 
 # class WigglerSegment:
 #     def __init__(self, s0=0, length=0, x0=0, y0=0):
