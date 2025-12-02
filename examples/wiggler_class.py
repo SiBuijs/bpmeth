@@ -743,35 +743,31 @@ class SymbolicGenerator:
             filename = 'B_field_eval.c'
 
         with open(filename, 'w') as f:
-            f.write(f"#include <math.h>\n\n")
-
-            f.write(f"typedef struct {{\n")
-            f.write(f"    double {field}x, {field}y, {field}s;\n")
-            f.write(f"}} Field;\n")
+            f.write(f"#include <math.h>\n")
+            f.write(f"#include <stddef.h>\n\n")
 
             f.write(f"// Auto-generated symbolic field expressions for {field}\n")
-            f.write(f"Field evaluate_{field}(const double x, const double y, const double s, const double params[static {len(self.param_names)}]) {{\n")
+            f.write(f"void evaluate_{field}(const double x_array[], const double y_array[], const double s_array[], size_t n, const double params[static {len(self.param_names)}], double Bx_out[], double By_out[], double Bs_out[]) {{\n")
 
-            f.write("    // Parameter assignments\n")
+            f.write("\t// Parameter assignments\n")
             for i, name in enumerate(self.param_names):
-                f.write(f"    const double {name} = params[{i}];\n")
+                f.write(f"\tconst double {name} = params[{i}];\n")
             f.write("\n")
 
-            f.write("    // Common sub-expressions\n")
+            names = [f'{field}x_out', f'{field}y_out', f'{field}s_out']
+            f.write("\tfor (size_t ii = 0; ii < n; ++ii) {\n")
+            f.write("\t\tconst double x = x_array[ii];\n")
+            f.write("\t\tconst double y = y_array[ii];\n")
+            f.write("\t\tconst double s = s_array[ii];\n\n")
+            f.write("\t\t// Common sub-expressions\n")
             for lhs, rhs in cse_subs:
-                f.write(f"    const double {lhs} = {printer.doprint(rhs)};\n")
-            f.write("\n")
-            f.write("    // Reduced expressions\n")
-            names = [f'{field}x', f'{field}y', f'{field}s']
-            for i, expr in enumerate(reduced_exprs):
-                f.write(f"    const double {names[i]} = {expr};\n")
+                f.write(f"\t\tconst double {lhs} = {printer.doprint(rhs)};\n")
             f.write("\n")
 
-            f.write(f"    Field {field};\n")
-            f.write(f"    {field}.{field}x = {field}x;\n")
-            f.write(f"    {field}.{field}y = {field}y;\n")
-            f.write(f"    {field}.{field}s = {field}s;\n")
-            f.write(f"    return {field};\n")
+            f.write("\t\t// Reduced expressions\n")
+            for i, expr in enumerate(reduced_exprs):
+                f.write(f"\t\t{names[i]}[ii] = {expr};\n")
+            f.write("}\n")
             f.write("}")
 
     def compile_C_code(self, field='B'):
@@ -780,13 +776,7 @@ class SymbolicGenerator:
 
         ffibuilder = FFI()
 
-        ffibuilder.cdef(f"""
-            typedef struct {{
-                double {field}x, {field}y, {field}s;
-            }} Field;
-
-            Field evaluate_{field}(double x, double y, double s, double* params);
-        """)
+        ffibuilder.cdef(f"void evaluate_{field}(const double x_array[], const double y_array[], const double s_array[], size_t n, const double params[static {len(self.param_names)}], double Bx_out[], double By_out[], double Bs_out[]);")
 
         # Read the C file
         with open(f"{field}_field_eval.c") as f:
@@ -810,13 +800,39 @@ class SymbolicGenerator:
             # extra_compile_args = ["/O2", "/fp:fast"]
 
         ffibuilder.set_source(
-            "_field",  # Name of the generated Python extension module
+            f"_field_{field}",  # Name of the generated Python extension module
             c_source,  # Include the C code
             libraries=[],  # No external libraries needed
             extra_compile_args=extra_compile_args,
         )
 
         ffibuilder.compile(verbose=True)
+
+
+"""
+def get_field(s_array, param_dict):
+    from _field import ffi, lib
+    import numpy as np
+
+    # Ensure contiguous double arrays
+    s = np.ascontiguousarray(s_array, dtype=np.double)
+    params = np.ascontiguousarray(list(param_dict.values()), dtype=np.double)
+
+    n = s.size
+
+    # Output buffer
+    Bx_out = np.empty(n, dtype=np.double)
+
+    # Get C pointers (use const for input arrays)
+    s_c = ffi.cast("const double *", ffi.from_buffer(s))
+    params_c = ffi.cast("const double *", ffi.from_buffer(params))
+    bx_c = ffi.cast("double *", ffi.from_buffer(Bx_out))
+
+    # Call the C function
+    lib.evaluate_B_array(s_c, n, params_c, bx_c)
+
+    return Bx_out
+"""
 
 
 class FieldCalculator:
@@ -869,6 +885,7 @@ class FieldCalculator:
 
     #@profile
     def _select_region(self, s_val):
+<<<<<<< HEAD
         import numpy as _np
         sb = self.s_boundaries
         # Use numpy.searchsorted which accepts scalars and arrays
@@ -909,6 +926,22 @@ class FieldCalculator:
                 Bx_out.append(Bx)
                 By_out.append(By)
                 Bs_out.append(Bs)
+=======
+        s_arr = np.asarray(s_val)
+        idx = np.searchsorted(self.s_boundaries, s_arr, side='right') - 1
+        max_idx = max(0, len(self.s_boundaries) - 2)
+        idx = np.clip(idx, 0, max_idx)
+        return int(idx) if s_arr.shape == () else idx
+
+    #@profile
+    def get_Bfield(self, x_arr, y_arr, s_arr, python=True):
+        idx = self._select_region(s_arr)
+        param_dict = self._par_dicts[int(idx)]
+
+        if python:
+            Bx_out, By_out, Bs_out = self.B_field_eval.evaluate_B(x_arr, y_arr, s_arr, **param_dict)
+
+>>>>>>> b54edd1 (Halfway commit)
         else:
             from _field import ffi, lib
             for s_val, idx in zip(s_list, idxs):
@@ -920,9 +953,66 @@ class FieldCalculator:
                 By_out.append(result.By)
                 Bs_out.append(result.Bs)
 
+<<<<<<< HEAD
         if scalar_input:
             return Bx_out[0], By_out[0], Bs_out[0]
         return _np.array(Bx_out), _np.array(By_out), _np.array(Bs_out)
+=======
+            # Ensure contiguous double arrays
+            x = np.ascontiguousarray(x_arr, dtype=np.double)
+            y = np.ascontiguousarray(y_arr, dtype=np.double)
+            s = np.ascontiguousarray(s_arr, dtype=np.double)
+
+            params = np.ascontiguousarray(list(param_dict.values()), dtype=np.double)
+
+            n = s.size
+
+            # Output buffer
+            Bx_out = np.empty(n, dtype=np.double)
+            By_out = np.empty(n, dtype=np.double)
+            Bs_out = np.empty(n, dtype=np.double)
+
+            # Get C pointers (use const for input arrays)
+            x_c = ffi.cast("const double *", ffi.from_buffer(x))
+            y_c = ffi.cast("const double *", ffi.from_buffer(y))
+            s_c = ffi.cast("const double *", ffi.from_buffer(s))
+
+            params_c = ffi.cast("const double *", ffi.from_buffer(params))
+
+            bx_c = ffi.cast("double *", ffi.from_buffer(Bx_out))
+            by_c = ffi.cast("double *", ffi.from_buffer(By_out))
+            bs_c = ffi.cast("double *", ffi.from_buffer(Bs_out))
+
+            # Call the C function
+            lib.evaluate_B_array(x_c, y_c, s_c, n, params_c, bx_c, by_c, bs_c)
+
+        return Bx_out, By_out, Bs_out
+
+    """
+    def get_field(s_array, param_dict):
+        from _field import ffi, lib
+        import numpy as np
+
+        # Ensure contiguous double arrays
+        s = np.ascontiguousarray(s_array, dtype=np.double)
+        params = np.ascontiguousarray(list(param_dict.values()), dtype=np.double)
+
+        n = s.size
+
+        # Output buffer
+        Bx_out = np.empty(n, dtype=np.double)
+
+        # Get C pointers (use const for input arrays)
+        s_c = ffi.cast("const double *", ffi.from_buffer(s))
+        params_c = ffi.cast("const double *", ffi.from_buffer(params))
+        bx_c = ffi.cast("double *", ffi.from_buffer(Bx_out))
+
+        # Call the C function
+        lib.evaluate_B_array(s_c, n, params_c, bx_c)
+
+        return Bx_out
+    """
+>>>>>>> b54edd1 (Halfway commit)
 
     def get_vector_potential(self, x, y, s, python=True):
         idx = self._select_region(s)

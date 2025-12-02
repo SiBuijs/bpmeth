@@ -46,6 +46,8 @@ symbolic_wiggler.write_to_python(field='A')
 symbolic_wiggler.write_to_c(field='B')
 symbolic_wiggler.write_to_c(field='A')
 
+symbolic_wiggler.compile_C_code(field='B')
+
 field_calculator = FieldCalculator(filepath=fit_par_path)
 
 x = 0.001
@@ -56,7 +58,7 @@ iter = 100000
 s_vals = np.linspace(-1, 1, iter)
 
 start_time = time.time()
-Bx, By, Bz = field_calculator.get_Bfield(x=x, y=y, s=s_vals, python=True)
+Bx, By, Bz = field_calculator.get_Bfield(x_arr=x, y_arr=y, s_arr=s_vals, python=True)
 #for s_val in s_vals:
 #    Bx, By, Bz = field_calculator.get_Bfield(x=x, y=y, s=s_val, python=True)
 end_time = time.time()
@@ -70,7 +72,7 @@ end_time = time.time()
 print(f"Time taken to compile C code for B field: {end_time - start_time} seconds")
 
 start_time = time.time()
-Bx_c, By_c, Bz_c = field_calculator.get_Bfield(x=x, y=y, s=s_vals, python=True)
+Bx_c, By_c, Bz_c = field_calculator.get_Bfield(x_arr=x, y_arr=y, s_arr=s_vals, python=True)
 #for s_val in s_vals:
 #    Bx_c, By_c, Bz_c = field_calculator.get_Bfield(x=x, y=y, s=s_val, python=False)
 end_time = time.time()
@@ -95,4 +97,3 @@ tw_wig.plot('x y')
 
 #env = xt.load('example_data/b075_2024.09.25.madx')
 #line = env.ring
-
