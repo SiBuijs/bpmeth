@@ -14,6 +14,8 @@ import time
 from scipy.signal import find_peaks
 import matplotlib.pyplot as plt
 
+import cProfile
+
 from sympy.utilities.codegen import codegen
 
 
@@ -747,18 +749,18 @@ class SymbolicGenerator:
             f.write(f"#include <stddef.h>\n\n")
 
             f.write(f"// Auto-generated symbolic field expressions for {field}\n")
-            f.write(f"void evaluate_{field}(const double x_array[], const double y_array[], const double s_array[], size_t n, const double params[static {len(self.param_names)}], double Bx_out[], double By_out[], double Bs_out[]) {{\n")
-
-            f.write("\t// Parameter assignments\n")
-            for i, name in enumerate(self.param_names):
-                f.write(f"\tconst double {name} = params[{i}];\n")
-            f.write("\n")
-
+            f.write(f"void evaluate_{field}(const double x_array[], const double y_array[], const double s_array[], size_t n, const double **params, double {field}x_out[], double {field}y_out[], double {field}s_out[]){{\n")
             names = [f'{field}x_out', f'{field}y_out', f'{field}s_out']
             f.write("\tfor (size_t ii = 0; ii < n; ++ii) {\n")
             f.write("\t\tconst double x = x_array[ii];\n")
             f.write("\t\tconst double y = y_array[ii];\n")
             f.write("\t\tconst double s = s_array[ii];\n\n")
+
+            f.write("\t\t// Parameter List\n")
+            for j, name in enumerate(self.param_names):
+                f.write(f"\t\tconst double {name} = params[ii][{j}];\n")
+            f.write("\n")
+
             f.write("\t\t// Common sub-expressions\n")
             for lhs, rhs in cse_subs:
                 f.write(f"\t\tconst double {lhs} = {printer.doprint(rhs)};\n")
@@ -776,8 +778,7 @@ class SymbolicGenerator:
 
         ffibuilder = FFI()
 
-        ffibuilder.cdef(f"void evaluate_{field}(const double x_array[], const double y_array[], const double s_array[], size_t n, const double params[static {len(self.param_names)}], double Bx_out[], double By_out[], double Bs_out[]);")
-
+        ffibuilder.cdef(f"void evaluate_{field}(const double x_array[], const double y_array[], const double s_array[], size_t n, const double **params, double {field}x_out[], double {field}y_out[], double {field}s_out[]);")
         # Read the C file
         with open(f"{field}_field_eval.c") as f:
             c_source = f.read()
@@ -808,42 +809,29 @@ class SymbolicGenerator:
 
         ffibuilder.compile(verbose=True)
 
-
-"""
-def get_field(s_array, param_dict):
-    from _field import ffi, lib
-    import numpy as np
-
-    # Ensure contiguous double arrays
-    s = np.ascontiguousarray(s_array, dtype=np.double)
-    params = np.ascontiguousarray(list(param_dict.values()), dtype=np.double)
-
-    n = s.size
-
-    # Output buffer
-    Bx_out = np.empty(n, dtype=np.double)
-
-    # Get C pointers (use const for input arrays)
-    s_c = ffi.cast("const double *", ffi.from_buffer(s))
-    params_c = ffi.cast("const double *", ffi.from_buffer(params))
-    bx_c = ffi.cast("double *", ffi.from_buffer(Bx_out))
-
-    # Call the C function
-    lib.evaluate_B_array(s_c, n, params_c, bx_c)
-
-    return Bx_out
-"""
-
-
 class FieldCalculator:
     def __init__(self, df_fit_pars=None, filepath=None):
         import importlib
         import B_field_eval
         import A_field_eval
+        try:
+            from _field_B import ffi as _ffi_B, lib as _lib_B
+        except Exception:
+            _ffi_B = None
+            _lib_B = None
+        try:
+            from _field import ffi as _ffi_A, lib as _lib_A
+        except Exception:
+            _ffi_A = None
+            _lib_A = None
         importlib.reload(B_field_eval)
         importlib.reload(A_field_eval)
         self.B_field_eval = B_field_eval
         self.A_field_eval = A_field_eval
+        self._ffi_B = _ffi_B
+        self._lib_B = _lib_B
+        self._ffi_A = _ffi_A
+        self._lib_A = _lib_A
 
         # For the integrator
         self.integrator = []
@@ -867,13 +855,20 @@ class FieldCalculator:
             "param_value": self.df["param_value"].to_numpy(),
         }
 
-        self._par_dicts = []
+        self._contruct_par_table()
+
+    def _contruct_par_table(self):
+        par_dicts = []
+        par_table = []
         for i in range(len(self.s_boundaries) - 1):
             s_mid_i = self.s_mid[i]
             mask = (self.s_start <= s_mid_i) & (self.s_end > s_mid_i)
             names = self._np_par_cache["param_name"][mask]
             vals = self._np_par_cache["param_value"][mask]
-            self._par_dicts.append(dict(zip(names, vals)))
+            par_dicts.append(dict(zip(names, vals)))
+            par_table.append(list(vals))
+        self.par_dicts = par_dicts
+        self.par_table = np.ascontiguousarray(par_table, dtype=np.double)
 
     @staticmethod
     def _rework_dataframe(df_fit_pars):
@@ -885,7 +880,6 @@ class FieldCalculator:
 
     #@profile
     def _select_region(self, s_val):
-<<<<<<< HEAD
         import numpy as _np
         sb = self.s_boundaries
         # Use numpy.searchsorted which accepts scalars and arrays
@@ -898,74 +892,35 @@ class FieldCalculator:
         return idxs
 
     #@profile
-    def get_Bfield(self, x, y, s, python=True):
-        import numpy as _np
+    def get_Bfield(self, x_arr, y_arr, s_arr, python=False):
+        idxs = self._select_region(s_arr)
+        #param_dict = self._par_dicts[int(idxs)]
+        #param_table = self.par_table[i] for i in idxs
 
-        s_arr = _np.asarray(s)
-        scalar_input = s_arr.ndim == 0
-        # ensure iterable sequence of float scalars
-        if scalar_input:
-            s_list = [float(s_arr)]
-        else:
-            s_list = s_arr.astype(float).tolist()
-
-        # determine region indices for all s values (works for scalars and arrays)
-        idxs = self._select_region(s_list)
-        # normalize idxs to iterable list
-        if _np.isscalar(idxs):
-            idxs = [int(idxs)] * len(s_list) if len(s_list) > 1 else [int(idxs)]
-
-        Bx_out = []
-        By_out = []
-        Bs_out = []
-
+        # TODO: This is probably not correct right now, need to change it later. Focus on C first.
         if python:
-            for s_val, idx in zip(s_list, idxs):
-                param_dict = self._par_dicts[int(idx)]
-                Bx, By, Bs = self.B_field_eval.evaluate_B(x, y, s_val, **param_dict)
-                Bx_out.append(Bx)
-                By_out.append(By)
-                Bs_out.append(Bs)
-=======
-        s_arr = np.asarray(s_val)
-        idx = np.searchsorted(self.s_boundaries, s_arr, side='right') - 1
-        max_idx = max(0, len(self.s_boundaries) - 2)
-        idx = np.clip(idx, 0, max_idx)
-        return int(idx) if s_arr.shape == () else idx
+            Bx_out, By_out, Bs_out = self.B_field_eval.evaluate_B(x_arr, y_arr, s_arr, **self.par_table)
 
-    #@profile
-    def get_Bfield(self, x_arr, y_arr, s_arr, python=True):
-        idx = self._select_region(s_arr)
-        param_dict = self._par_dicts[int(idx)]
-
-        if python:
-            Bx_out, By_out, Bs_out = self.B_field_eval.evaluate_B(x_arr, y_arr, s_arr, **param_dict)
-
->>>>>>> b54edd1 (Halfway commit)
         else:
-            from _field import ffi, lib
-            for s_val, idx in zip(s_list, idxs):
-                param_dict = self._par_dicts[int(idx)]
-                params = np.array(list(param_dict.values()), dtype=np.double)
-                params_c = ffi.cast("double*", params.ctypes.data)
-                result = lib.evaluate_B(x, y, s_val, params_c)
-                Bx_out.append(result.Bx)
-                By_out.append(result.By)
-                Bs_out.append(result.Bs)
-
-<<<<<<< HEAD
-        if scalar_input:
-            return Bx_out[0], By_out[0], Bs_out[0]
-        return _np.array(Bx_out), _np.array(By_out), _np.array(Bs_out)
-=======
             # Ensure contiguous double arrays
             x = np.ascontiguousarray(x_arr, dtype=np.double)
             y = np.ascontiguousarray(y_arr, dtype=np.double)
             s = np.ascontiguousarray(s_arr, dtype=np.double)
 
-            params = np.ascontiguousarray(list(param_dict.values()), dtype=np.double)
+            params = np.ascontiguousarray(self.par_table[idxs])
+
+            ffi = self._ffi_B
 
             n = s.size
+
+            # Build array of pointers
+            params_ptrs = [None] * n
+            for i in range(n):
+                row = self.par_table[idxs[i]]
+                params_ptrs[i] = ffi.cast("const double *", ffi.from_buffer(row))
+
+            # Now make a real C array of pointers:
+            params_c = ffi.new("const double*[]", params_ptrs)
 
             # Output buffer
             Bx_out = np.empty(n, dtype=np.double)
@@ -973,78 +928,99 @@ class FieldCalculator:
             Bs_out = np.empty(n, dtype=np.double)
 
             # Get C pointers (use const for input arrays)
-            x_c = ffi.cast("const double *", ffi.from_buffer(x))
-            y_c = ffi.cast("const double *", ffi.from_buffer(y))
-            s_c = ffi.cast("const double *", ffi.from_buffer(s))
+            x_c = self._ffi_B.cast("const double *", self._ffi_B.from_buffer(x))
+            y_c = self._ffi_B.cast("const double *", self._ffi_B.from_buffer(y))
+            s_c = self._ffi_B.cast("const double *", self._ffi_B.from_buffer(s))
 
-            params_c = ffi.cast("const double *", ffi.from_buffer(params))
+            #params_c = self._ffi_B.cast(f"const double (*)[{n_params}]", self._ffi_B.from_buffer(params))
 
-            bx_c = ffi.cast("double *", ffi.from_buffer(Bx_out))
-            by_c = ffi.cast("double *", ffi.from_buffer(By_out))
-            bs_c = ffi.cast("double *", ffi.from_buffer(Bs_out))
+            bx_c = self._ffi_B.cast("double *", self._ffi_B.from_buffer(Bx_out))
+            by_c = self._ffi_B.cast("double *", self._ffi_B.from_buffer(By_out))
+            bs_c = self._ffi_B.cast("double *", self._ffi_B.from_buffer(Bs_out))
 
             # Call the C function
-            lib.evaluate_B_array(x_c, y_c, s_c, n, params_c, bx_c, by_c, bs_c)
+            self._lib_B.evaluate_B(x_c, y_c, s_c, n, params_c, bx_c, by_c, bs_c)
 
         return Bx_out, By_out, Bs_out
 
-    """
-    def get_field(s_array, param_dict):
-        from _field import ffi, lib
-        import numpy as np
-
-        # Ensure contiguous double arrays
-        s = np.ascontiguousarray(s_array, dtype=np.double)
-        params = np.ascontiguousarray(list(param_dict.values()), dtype=np.double)
-
-        n = s.size
-
-        # Output buffer
-        Bx_out = np.empty(n, dtype=np.double)
-
-        # Get C pointers (use const for input arrays)
-        s_c = ffi.cast("const double *", ffi.from_buffer(s))
-        params_c = ffi.cast("const double *", ffi.from_buffer(params))
-        bx_c = ffi.cast("double *", ffi.from_buffer(Bx_out))
-
-        # Call the C function
-        lib.evaluate_B_array(s_c, n, params_c, bx_c)
-
-        return Bx_out
-    """
->>>>>>> b54edd1 (Halfway commit)
-
     def get_vector_potential(self, x, y, s, python=True):
-        idx = self._select_region(s)
+        import numpy as _np
+        # Detect scalar vs array mode
+        scalar_mode = _np.isscalar(s) and _np.isscalar(x) and _np.isscalar(y)
 
-        param_dict = self._par_dicts[int(idx)]
+        if scalar_mode:
+            idx = self._select_region(s)
+            param_dict = self.par_dicts[int(idx)]
+
+            if python:
+                Ax, Ay, As = self.A_field_eval.evaluate_A(x, y, s, **param_dict)
+            else:
+                ffi = self._ffi_A or __import__('_field').ffi
+                lib = self._lib_A or __import__('_field').lib
+
+                params = _np.array(list(param_dict.values()), dtype=_np.double)
+                params_c = ffi.cast("double*", params.ctypes.data)
+
+                result = lib.evaluate_A(x, y, s, params_c)
+                Ax = result.Ax
+                Ay = result.Ay
+                As = result.As
+
+            return Ax, Ay, As
+
+        # Array mode: ensure contiguous numpy arrays
+        x_arr = _np.ascontiguousarray(_np.atleast_1d(x), dtype=_np.double)
+        y_arr = _np.ascontiguousarray(_np.atleast_1d(y), dtype=_np.double)
+        s_arr = _np.ascontiguousarray(_np.atleast_1d(s), dtype=_np.double)
+
+        idxs = self._select_region(s_arr)
 
         if python:
-            Ax, Ay, As = self.A_field_eval.evaluate_A(x, y, s, **param_dict)
+            n = s_arr.size
+            Ax_out = _np.empty(n, dtype=_np.double)
+            Ay_out = _np.empty(n, dtype=_np.double)
+            As_out = _np.empty(n, dtype=_np.double)
+            for i in range(n):
+                pd = self.par_dicts[int(idxs[i])]
+                Ax_out[i], Ay_out[i], As_out[i] = self.A_field_eval.evaluate_A(x_arr[i], y_arr[i], s_arr[i], **pd)
+            return Ax_out, Ay_out, As_out
 
-        else:
-            from _field import ffi, lib
+        # C path (array)
+        ffi = self._ffi_A or __import__('_field_A').ffi
+        lib = self._lib_A or __import__('_field_A').lib
 
-            params = param_dict.values()
-            params = np.array(list(params), dtype=np.double)
+        n = s_arr.size
+        params_ptrs = [None] * n
+        for i in range(n):
+            row = self.par_table[idxs[i]]
+            params_ptrs[i] = ffi.cast("const double *", ffi.from_buffer(row))
 
-            params_c = ffi.cast("double*", params.ctypes.data)
+        params_c = ffi.new("const double*[]", params_ptrs)
 
-            result = lib.evaluate_A(x, y, s, params_c)
+        Ax_out = _np.empty(n, dtype=_np.double)
+        Ay_out = _np.empty(n, dtype=_np.double)
+        As_out = _np.empty(n, dtype=_np.double)
 
-            Ax = result.Ax
-            Ay = result.Ay
-            As = result.As
+        x_c = ffi.cast("const double *", ffi.from_buffer(x_arr))
+        y_c = ffi.cast("const double *", ffi.from_buffer(y_arr))
+        s_c = ffi.cast("const double *", ffi.from_buffer(s_arr))
 
-        return Ax, Ay, As
+        ax_c = ffi.cast("double *", ffi.from_buffer(Ax_out))
+        ay_c = ffi.cast("double *", ffi.from_buffer(Ay_out))
+        as_c = ffi.cast("double *", ffi.from_buffer(As_out))
 
+        lib.evaluate_A(x_c, y_c, s_c, n, params_c, ax_c, ay_c, as_c)
+        return Ax_out, Ay_out, As_out
+
+    # TODO: Removed the for loop, I believe it's no longer necessary; lookup is done in get_Bfield.
+    # TODO: But not sure if it's really correct this way.
     def set_integrator(self):
-        for ii in range(self.n_slices):
-             wig = xt.BorisSpatialIntegrator(fieldmap_callable=self.get_Bfield, s_start=self.s_start[0], s_end=self.s_end[-1],
+         self.integrator = xt.BorisSpatialIntegrator(fieldmap_callable=self.get_Bfield, s_start=self.s_start[0], s_end=self.s_end[-1],
                                              n_steps=np.round(self.n_steps / self.n_slices).astype(int),
                                              verbose=True)
-             self.integrator.append(wig)
 
+    # TODO: Removed the for loop, I believe it's no longer necessary; lookup is done in get_Bfield.
+    # TODO: But not sure if it's really correct this way.
     def get_line(self):
 
         if self.integrator == []:
@@ -1052,22 +1028,26 @@ class FieldCalculator:
 
         self.env = xt.Environment()
 
-        for ii in range(self.n_slices):
-            self.env.elements[f'wigslice_{ii}'] = self.integrator[ii]
+        self.env.elements[f'wig'] = self.integrator
 
-        self.wiggler_line = self.env.new_line(components=['wigslice_' + str(ii) for ii in range(self.n_slices)])
+        self.wiggler_line = self.env.new_line(components=['wig'])
+
         return self.wiggler_line
 
     # PUBLIC
     # Plot the B field along s at a given (x, y) point.
     # Seems to function as desired and the plotted data seems correct.
-    def plot_B_field(self, x=0, y=0, n_points=2000, plot_data=False, python=True):
+    def plot_B_field(self, x_arr=0, y_arr=0, n_points=2000, plot_data=False, python=False):
         s_min = self.s_boundaries[0]
         s_max = self.s_boundaries[-2]
         s_vals = np.linspace(s_min, s_max, n_points)
 
+        if type(x_arr) is not np.ndarray or list:
+            x_arr = np.full(n_points, x_arr)
+        if type(y_arr) is not np.ndarray or list:
+            y_arr = np.full(n_points, y_arr)
 
-        Bx_vals, By_vals, Bs_vals = self.get_Bfield(x, y, s_vals, python=python)
+        Bx_vals, By_vals, Bs_vals = self.get_Bfield(x_arr, y_arr, s_vals, python=python)
 
         plt.figure(figsize=(10, 6))
         plt.plot(s_vals, Bx_vals, label='Bx')
@@ -1075,25 +1055,22 @@ class FieldCalculator:
         plt.plot(s_vals, Bs_vals, label='Bs')
         plt.xlabel('s [m]')
         plt.ylabel('Magnetic Field [T]')
-        plt.title(f'Magnetic Field at (x={x}, y={y})')
+        plt.title(f'Magnetic Field at (x={x_arr[0]}, y={y_arr[0]})')
         plt.legend()
         plt.grid()
         plt.show()
 
-    def plot_A_field(self, x=0, y=0, n_points=2000, python=True):
+    def plot_A_field(self, x_arr=0, y_arr=0, n_points=2000, python=False):
         s_min = self.s_boundaries[0]
         s_max = self.s_boundaries[-2]
         s_vals = np.linspace(s_min, s_max, n_points)
 
-        Ax_vals = np.zeros(n_points)
-        Ay_vals = np.zeros(n_points)
-        As_vals = np.zeros(n_points)
+        if not isinstance(x_arr, (np.ndarray, list)):
+            x_arr = np.full(n_points, x_arr)
+        if not isinstance(y_arr, (np.ndarray, list)):
+            y_arr = np.full(n_points, y_arr)
 
-        for i, s in enumerate(s_vals):
-            Ax, Ay, As = self.get_vector_potential(x, y, s, python=python)
-            Ax_vals[i] = Ax
-            Ay_vals[i] = Ay
-            As_vals[i] = As
+        Ax_vals, Ay_vals, As_vals = self.get_vector_potential(x_arr, y_arr, s_vals, python=python)
 
         plt.figure(figsize=(10, 6))
         plt.plot(s_vals, Ax_vals, label='Ax')
@@ -1101,7 +1078,7 @@ class FieldCalculator:
         plt.plot(s_vals, As_vals, label='As')
         plt.xlabel('s [m]')
         plt.ylabel('Vector Potential [T·m]')
-        plt.title(f'Vector Potential at (x={x}, y={y})')
+        plt.title(f'Vector Potential at (x={x_arr[0]}, y={y_arr[0]})')
         plt.legend()
         plt.grid()
         plt.show()
