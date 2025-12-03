@@ -820,7 +820,7 @@ class FieldCalculator:
             _ffi_B = None
             _lib_B = None
         try:
-            from _field import ffi as _ffi_A, lib as _lib_A
+            from _field_A import ffi as _ffi_A, lib as _lib_A
         except Exception:
             _ffi_A = None
             _lib_A = None
@@ -878,20 +878,13 @@ class FieldCalculator:
         df.set_index(['field_component', 'derivative_x', 'region_name'], inplace=True)
         return df
 
-    #@profile
+    @profile
     def _select_region(self, s_val):
-        import numpy as _np
-        sb = self.s_boundaries
         # Use numpy.searchsorted which accepts scalars and arrays
-        idxs = _np.searchsorted(sb, s_val, side='right') - 1
-        # Clamp to valid region indices [0, n_regions-1]
-        max_idx = len(sb) - 2
-        idxs = _np.clip(idxs, 0, max_idx)
-        if _np.isscalar(s_val):
-            return int(idxs)
+        idxs = np.searchsorted(self.s_boundaries, s_val, side='right') - 1
         return idxs
 
-    #@profile
+    @profile
     def get_Bfield(self, x_arr, y_arr, s_arr, python=False):
         idxs = self._select_region(s_arr)
         #param_dict = self._par_dicts[int(idxs)]
@@ -1015,22 +1008,26 @@ class FieldCalculator:
     # TODO: Removed the for loop, I believe it's no longer necessary; lookup is done in get_Bfield.
     # TODO: But not sure if it's really correct this way.
     def set_integrator(self):
-         self.integrator = xt.BorisSpatialIntegrator(fieldmap_callable=self.get_Bfield, s_start=self.s_start[0], s_end=self.s_end[-1],
-                                             n_steps=np.round(self.n_steps / self.n_slices).astype(int),
-                                             verbose=True)
+        for ii in range(len(self.s_boundaries) - 1):
+            wig = xt.BorisSpatialIntegrator(fieldmap_callable=self.get_Bfield,
+                                            s_start=self.s_boundaries[ii],
+                                            s_end=self.s_boundaries[ii + 1],
+                                            n_steps=np.round(self.n_steps / (len(self.s_boundaries) - 1)).astype(int),
+                                            verbose=True)
+            self.integrator.append(wig)
 
     # TODO: Removed the for loop, I believe it's no longer necessary; lookup is done in get_Bfield.
     # TODO: But not sure if it's really correct this way.
     def get_line(self):
-
         if self.integrator == []:
             self.set_integrator()
 
         self.env = xt.Environment()
 
-        self.env.elements[f'wig'] = self.integrator
+        for i, wig in enumerate(self.integrator):
+            self.env.elements[f'wigslice_{i}'] = wig
 
-        self.wiggler_line = self.env.new_line(components=['wig'])
+        self.wiggler_line = self.env.new_line(components=['wigslice_' + str(ii) for ii in range(len(self.s_boundaries) - 1)])
 
         return self.wiggler_line
 
@@ -1083,89 +1080,60 @@ class FieldCalculator:
         plt.grid()
         plt.show()
 
-#
-#     def set_integrator(self, n_slices=1000, n_steps = 1000):
-#         if self.segments == []:
-#             self.set_segments()
-#
-#         self.n_slices = n_slices
-#         l_wig = self.field_fitter.length
-#         s_start = self.field_fitter.s_full[0]
-#         s_end   = self.field_fitter.s_full[-1]
-#
-#         s_cuts = np.linspace(s_start, s_end, n_slices + 1)
-#         #s_mid = 0.5 * (s_cuts[:-1] + s_cuts[1:])
-#         for ii in range(n_slices):
-#             wig = xt.BorisSpatialIntegrator(fieldmap_callable=self.get_field, s_start=s_cuts[ii], s_end=s_cuts[ii + 1],
-#                                             n_steps=np.round(n_steps / n_slices).astype(int),
-#                                             verbose=True)
-#             self.integrator.append(wig)
-#
-#     def get_line(self):
-#         if self.integrator == []:
-#             self.set_integrator()
-#
-#         self.env = xt.Environment()
-#
-#         for ii in range(self.n_slices):
-#             self.env.elements[f'wigslice_{ii}'] = self.integrator[ii]
-#         self.wiggler_line = self.env.new_line(components=['wigslice_' + str(ii) for ii in range(self.n_slices)])
-#         return self.wiggler_line
-#
-#     def correctors(self, particle_ref):
-#         start_time = time.time()
-#         if self.wiggler_line is None:
-#             self.get_line()
-#
-#         self.wiggler_line.particle_ref = particle_ref
-#
-#         self.env['k0l_corr1'] = 0.
-#         self.env['k0l_corr2'] = 0.
-#         self.env['k0l_corr3'] = 0.
-#         self.env['k0l_corr4'] = 0.
-#         self.env['k0sl_corr1'] = 0.
-#         self.env['k0sl_corr2'] = 0.
-#         self.env['k0sl_corr3'] = 0.
-#         self.env['k0sl_corr4'] = 0.
-#         self.env['on_wig_corr'] = 1.0
-#
-#         self.env.new('corr1', xt.Multipole, knl=['on_wig_corr * k0l_corr1'], ksl=['on_wig_corr * k0sl_corr1'])
-#         self.env.new('corr2', xt.Multipole, knl=['on_wig_corr * k0l_corr2'], ksl=['on_wig_corr * k0sl_corr2'])
-#         self.env.new('corr3', xt.Multipole, knl=['on_wig_corr * k0l_corr3'], ksl=['on_wig_corr * k0sl_corr3'])
-#         self.env.new('corr4', xt.Multipole, knl=['on_wig_corr * k0l_corr4'], ksl=['on_wig_corr * k0sl_corr4'])
-#
-#         l_wig = self.field_fitter.length
-#
-#         self.wiggler_line.insert([
-#             self.env.place('corr1', at=0.02),
-#             self.env.place('corr2', at=0.1),
-#             self.env.place('corr3', at=l_wig - 0.1),
-#             self.env.place('corr4', at=l_wig - 0.02),
-#         ], s_tol=5e-3
-#         )
-#
-#         # To compute the kicks
-#         opt = self.wiggler_line.match(
-#             solve=False,
-#             betx=0, bety=0,
-#             only_orbit=True,
-#             include_collective=True,
-#             vary=xt.VaryList(['k0l_corr1', 'k0sl_corr1',
-#                               'k0l_corr2', 'k0sl_corr2',
-#                               'k0l_corr3', 'k0sl_corr3',
-#                               'k0l_corr4', 'k0sl_corr4',
-#                               ], step=1e-6),
-#             targets=[
-#                 xt.TargetSet(x=0, px=0, y=0, py=0., at=xt.END),
-#                 xt.TargetSet(x=0., y=0, at='wigslice_167'),
-#                 xt.TargetSet(x=0., y=0, at='wigslice_833')
-#                 ],
-#         )
-#         opt.step(2)
-#         end_time = time.time()
-#         print(f"Wiggler correctors set in {end_time - start_time:.2f} seconds.")
-#         print("Corrector strengths [T]:")
-#         print(f"  k0l_corr1 = {self.env['k0l_corr1']:.6e}, k0sl_corr1 = {self.env['k0sl_corr1']:.6e}")
-#         print(f"  k0l_corr2 = {self.env['k0l_corr2']:.6e}, k0sl_corr2 = {self.env['k0sl_corr2']:.6e}")
-#         print(f"  k0l_corr3 = {self.env['k0l_corr3']:.6e}, k0sl_corr3 = {self.env['k0sl_corr3']:.6e}")
-#         print(f"  k0l_corr4 = {self.env['k0l_corr4']:.6e}, k0sl_corr4 = {self.env['k0sl_corr4']:.6e}")
+    def correctors(self, particle_ref):
+        start_time = time.time()
+        if self.wiggler_line is None:
+            self.get_line()
+
+        self.wiggler_line.particle_ref = particle_ref
+
+        self.env['k0l_corr1'] = 0.
+        self.env['k0l_corr2'] = 0.
+        self.env['k0l_corr3'] = 0.
+        self.env['k0l_corr4'] = 0.
+        self.env['k0sl_corr1'] = 0.
+        self.env['k0sl_corr2'] = 0.
+        self.env['k0sl_corr3'] = 0.
+        self.env['k0sl_corr4'] = 0.
+        self.env['on_wig_corr'] = 1.0
+
+        self.env.new('corr1', xt.Multipole, knl=['on_wig_corr * k0l_corr1'], ksl=['on_wig_corr * k0sl_corr1'])
+        self.env.new('corr2', xt.Multipole, knl=['on_wig_corr * k0l_corr2'], ksl=['on_wig_corr * k0sl_corr2'])
+        self.env.new('corr3', xt.Multipole, knl=['on_wig_corr * k0l_corr3'], ksl=['on_wig_corr * k0sl_corr3'])
+        self.env.new('corr4', xt.Multipole, knl=['on_wig_corr * k0l_corr4'], ksl=['on_wig_corr * k0sl_corr4'])
+
+        l_wig = self.s_boundaries[-1] - self.s_boundaries[0]
+
+        self.wiggler_line.insert([
+            self.env.place('corr1', at=0.02),
+            self.env.place('corr2', at=0.1),
+            self.env.place('corr3', at=l_wig - 0.1),
+            self.env.place('corr4', at=l_wig - 0.02),
+        ], s_tol=5e-3
+        )
+
+        # To compute the kicks
+        opt = self.wiggler_line.match(
+            solve=False,
+            betx=0, bety=0,
+            only_orbit=True,
+            include_collective=True,
+            vary=xt.VaryList(['k0l_corr1', 'k0sl_corr1',
+                              'k0l_corr2', 'k0sl_corr2',
+                              'k0l_corr3', 'k0sl_corr3',
+                              'k0l_corr4', 'k0sl_corr4',
+                             ], step=1e-6),
+            targets=[
+                xt.TargetSet(x=0, px=0, y=0, py=0., at=xt.END),
+                xt.TargetSet(x=0., y=0, at='wigslice_167'),
+                xt.TargetSet(x=0., y=0, at='wigslice_833')
+                ],
+        )
+        opt.step(2)
+        end_time = time.time()
+        print(f"Wiggler correctors set in {end_time - start_time:.2f} seconds.")
+        print("Corrector strengths [T]:")
+        print(f"  k0l_corr1 = {self.env['k0l_corr1']:.6e}, k0sl_corr1 = {self.env['k0sl_corr1']:.6e}")
+        print(f"  k0l_corr2 = {self.env['k0l_corr2']:.6e}, k0sl_corr2 = {self.env['k0sl_corr2']:.6e}")
+        print(f"  k0l_corr3 = {self.env['k0l_corr3']:.6e}, k0sl_corr3 = {self.env['k0sl_corr3']:.6e}")
+        print(f"  k0l_corr4 = {self.env['k0l_corr4']:.6e}, k0sl_corr4 = {self.env['k0sl_corr4']:.6e}")
