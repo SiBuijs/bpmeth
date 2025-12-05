@@ -878,13 +878,15 @@ class FieldCalculator:
         df.set_index(['field_component', 'derivative_x', 'region_name'], inplace=True)
         return df
 
-    @profile
+    #@profile
     def _select_region(self, s_val):
         # Use numpy.searchsorted which accepts scalars and arrays
         idxs = np.searchsorted(self.s_boundaries, s_val, side='right') - 1
         return idxs
 
-    @profile
+    # TODO: See if I can avoid searchsorted;
+    # TODO: See if storing the fit parameters in a file, so that I can avoid casting.
+    #@profile
     def get_Bfield(self, x_arr, y_arr, s_arr, python=False):
         idxs = self._select_region(s_arr)
         #param_dict = self._par_dicts[int(idxs)]
@@ -899,8 +901,6 @@ class FieldCalculator:
             x = np.ascontiguousarray(x_arr, dtype=np.double)
             y = np.ascontiguousarray(y_arr, dtype=np.double)
             s = np.ascontiguousarray(s_arr, dtype=np.double)
-
-            params = np.ascontiguousarray(self.par_table[idxs])
 
             ffi = self._ffi_B
 
@@ -1005,8 +1005,6 @@ class FieldCalculator:
         lib.evaluate_A(x_c, y_c, s_c, n, params_c, ax_c, ay_c, as_c)
         return Ax_out, Ay_out, As_out
 
-    # TODO: Removed the for loop, I believe it's no longer necessary; lookup is done in get_Bfield.
-    # TODO: But not sure if it's really correct this way.
     def set_integrator(self):
         for ii in range(len(self.s_boundaries) - 1):
             wig = xt.BorisSpatialIntegrator(fieldmap_callable=self.get_Bfield,
@@ -1016,8 +1014,6 @@ class FieldCalculator:
                                             verbose=True)
             self.integrator.append(wig)
 
-    # TODO: Removed the for loop, I believe it's no longer necessary; lookup is done in get_Bfield.
-    # TODO: But not sure if it's really correct this way.
     def get_line(self):
         if self.integrator == []:
             self.set_integrator()
@@ -1027,7 +1023,7 @@ class FieldCalculator:
         for i, wig in enumerate(self.integrator):
             self.env.elements[f'wigslice_{i}'] = wig
 
-        self.wiggler_line = self.env.new_line(components=['wigslice_' + str(ii) for ii in range(len(self.s_boundaries) - 1)])
+        self.wiggler_line = self.env.new_line(components=[f'wigslice_{ii}' for ii in range(len(self.s_boundaries) - 1)])
 
         return self.wiggler_line
 
