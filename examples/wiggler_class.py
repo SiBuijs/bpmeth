@@ -719,8 +719,6 @@ class SymbolicGenerator:
     def write_to_c(self, field='B'):
         from sympy.printing.c import C99CodePrinter
 
-        from sympy import Pow
-
         class MulPowerPrinter(C99CodePrinter):
             def _print_Pow(self, expr):
                 base, exp = expr.as_base_exp()
