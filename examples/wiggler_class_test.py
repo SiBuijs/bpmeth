@@ -1,6 +1,7 @@
 from wiggler_class import FieldFitter
 from wiggler_class import SymbolicGenerator
 from wiggler_class import FieldCalculator
+from fieldmap_parsers import StandardFieldMapParser, UE36FieldMapParser
 import os.path
 import inspect
 #from wiggler_class import WigglerFull
@@ -20,19 +21,50 @@ import cProfile
 
 dz = 0.001  # Step size in the z direction for numerical differentiation.
 
-file_path = 'example_data/knot_map_test.txt'
-#file_path = 'example_data/UE36kn3_LH.dat'
-#file_path = 'example_data/UE36_LH_highres_2.dat'
+# Standard 6-column format (X Y Z Bx By Bs)
+# Resolve path relative to script location to handle different working directories
+script_dir = os.path.dirname(os.path.abspath(__file__))
+file_path = os.path.join(script_dir, 'example_data', 'knot_map_test.txt')
 
+# Alternative: UE36 format (Z, then Bx/By/Bs for each Y position)
+# file_path = 'example_data/UE36kn3_LH.dat'
+# file_path = 'example_data/UE36_LH_highres_2.dat'
+
+# Create FieldFitter with auto-detection (default behavior)
+# The parser will be automatically detected based on file format
 test_wiggler = FieldFitter(
-                                    file_path,
-                                    xy_point=(0, 0),
-                                    dx=0.001,
-                                    dy=0.001,
-                                    ds=0.001,
-                                    min_region_size=10,
-                                    deg=2,
-                            )
+    file_path,
+    xy_point=(0, 0),
+    dx=0.001,
+    dy=0.001,
+    ds=0.001,
+    min_region_size=10,
+    deg=2,
+)
+
+# Alternative: Explicitly specify parser for standard format
+# test_wiggler = FieldFitter(
+#     file_path,
+#     parser=StandardFieldMapParser(),  # Explicit parser specification
+#     xy_point=(0, 0),
+#     dx=0.001,
+#     dy=0.001,
+#     ds=0.001,
+#     min_region_size=10,
+#     deg=2,
+# )
+
+# Alternative: For UE36 format with custom Y positions
+# test_wiggler = FieldFitter(
+#     'example_data/UE36kn3_LH.dat',
+#     parser=UE36FieldMapParser(y_positions=None, field_order='Bx,By,Bs', dx=0.001, dy=0.001),
+#     xy_point=(0, 0),
+#     dx=0.001,
+#     dy=0.001,
+#     ds=0.001,
+#     min_region_size=10,
+#     deg=2,
+# )
 
 fit_par_path = 'fit_parameters.csv'
 
@@ -70,7 +102,7 @@ start_time = time.time()
 #with cProfile.Profile() as prof:
 Bx_p, By_p, Bz_p = field_calculator.get_Bfield(x_arr=x_vals, y_arr=y_vals, s_arr=s_vals, python=False)
 #print(prof.print_stats())
-#end_time = time.time()
+end_time = time.time()
 print(f"Time taken to evaluate B field on array using C code: {end_time - start_time} seconds")
 print(f"Time per evaluation using C code on array: {(end_time - start_time)/(steps)} seconds")
 #field_calculator.plot_B_field(x_arr=x, y_arr=y, python=False)
@@ -94,23 +126,24 @@ print(f"Time taken to compute twiss: {end_time - start_time} seconds")
 tw_wig.plot('x y')
 tw_wig.plot('betx bety', 'dx dy')
 plt.show()
-prrrr
-env = xt.load('example_data/b075_2024.09.25.madx')
-line = env.ring
 
-wiggler_places = ['ars11_uind_0610_1']
-
-tt = line.get_table()
-for wig_place in wiggler_places:
-    line.insert(wig_line, anchor='start', at=tt['s', wig_place])
-
-env['on_wig_corr'] = 0
-mywig.scale = 0
-tw_no_wig = line.twiss4d(strengths=True)
-tw_vs_momentum_no_wig = {}
-for dd in deltas:
-    tw_vs_momentum_no_wig[dd] = line.twiss4d(delta0=dd,
-                                         compute_chromatic_properties=False)
-
-tw = line.twiss4d(include_collective=True, particle_on_co=p_co,
-                  compute_chromatic_properties=False)
+# Additional examples (commented out)
+# env = xt.load('example_data/b075_2024.09.25.madx')
+# line = env.ring
+# 
+# wiggler_places = ['ars11_uind_0610_1']
+# 
+# tt = line.get_table()
+# for wig_place in wiggler_places:
+#     line.insert(wig_line, anchor='start', at=tt['s', wig_place])
+# 
+# env['on_wig_corr'] = 0
+# mywig.scale = 0
+# tw_no_wig = line.twiss4d(strengths=True)
+# tw_vs_momentum_no_wig = {}
+# for dd in deltas:
+#     tw_vs_momentum_no_wig[dd] = line.twiss4d(delta0=dd,
+#                                          compute_chromatic_properties=False)
+# 
+# tw = line.twiss4d(include_collective=True, particle_on_co=p_co,
+#                   compute_chromatic_properties=False)

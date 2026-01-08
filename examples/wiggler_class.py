@@ -18,6 +18,8 @@ import cProfile
 
 from sympy.utilities.codegen import codegen
 
+from fieldmap_parsers import FieldMapParser, StandardFieldMapParser, get_parser_for_file
+
 
 
 class FieldFitter:
@@ -25,6 +27,7 @@ class FieldFitter:
     def __init__(
             self,
             file_path,
+            parser=None,  # New: parser instance or format name
             xy_point=(0, 0),
             dx=0.001,
             dy=0.001,
@@ -43,6 +46,14 @@ class FieldFitter:
         self.length = None
         self.deg = deg
         self.field_tol = 1e-3
+
+        # Parser setup
+        if parser is None:
+            self.parser = self._get_default_parser()
+        elif isinstance(parser, FieldMapParser):
+            self.parser = parser
+        else:
+            raise TypeError(f"parser must be a FieldMapParser instance or None, got {type(parser)}")
 
         # DataFrames
         self.df_raw_data = None
@@ -103,12 +114,9 @@ class FieldFitter:
     # PRIVATE
     # This method reads the data from the file and stores it in a pandas DataFrame..
     def _parse_to_dataframe(self):
-        df = pd.read_csv(
-            self.file_path, sep=r"\s+", header=None, names=["X", "Y", "Z", "Bx", "By", "Bs"]
-        )
-        df.set_index(["X", "Y", "Z"], inplace=True)
-        self.df_raw_data = df
-        self.s_full = np.sort(df.index.get_level_values("Z").unique()).astype(float) * self.ds
+        # Use parser to parse the file
+        self.df_raw_data = self.parser.parse(self.file_path, dx=self.dx, dy=self.dy)
+        self.s_full = np.sort(self.df_raw_data.index.get_level_values("Z").unique()).astype(float) * self.ds
 
         # Check if Bs is much smaller than Bx and By
         # Sets an additional index der = 0.
@@ -117,6 +125,18 @@ class FieldFitter:
         # convert columns to MultiIndex (field, derivative)
         df_on.columns = pd.MultiIndex.from_tuples([(col, der) for col in df_on.columns])
         self.df_on_axis_raw = df_on
+
+    # PRIVATE
+    # Auto-detect format or use standard parser.
+    def _get_default_parser(self):
+        """Auto-detect format or use standard parser."""
+        # Try to auto-detect format
+        try:
+            return get_parser_for_file(self.file_path)
+        except (ValueError, FileNotFoundError):
+            # Fall back to standard parser if auto-detection fails or file not found
+            # The file will be checked again during actual parsing
+            return StandardFieldMapParser()
 
     def save_fit_pars(self, file_path):
         self.df_fit_pars.to_csv(file_path, index=True)
